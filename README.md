@@ -71,7 +71,13 @@ args = ["serve"]
 
 #### Visual Studio Code (Copilot Chat)
 
-グローバル設定（全ワークスペースで有効）: `~/.vscode/mcp.json`
+コマンドパレット（`Cmd+Shift+P`）から:
+
+1. `MCP: Add Server` を選択
+2. Command (stdio) を選択
+3. コマンド: `kb-mcp`、引数: `serve` を入力
+
+または手動で `~/.vscode/mcp.json`（グローバル）に追加:
 
 ```json
 {
