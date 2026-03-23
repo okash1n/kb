@@ -75,8 +75,9 @@ args = ["serve"]
 
 1. `MCP: Add Server` を選択
 2. `Command (stdio)` を選択
-3. コマンド名 → `kb-mcp` を入力してエンター
-4. 引数 → `serve` を入力してエンター
+3. サーバー名 → `kb` を入力してエンター
+4. コマンド → `kb-mcp serve` を入力してエンター
+5. スコープ → `User Settings` を選択（全ワークスペースで有効にする場合）
 
 または手動で `~/.vscode/mcp.json`（グローバル）に追加:
 
