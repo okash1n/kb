@@ -9,27 +9,34 @@
 - Obsidian CLI 1.12+
 - git
 
-## セットアップ
+## Installation
 
-### 1. インストール
+### Prerequisites
+
+- [uv](https://docs.astral.sh/uv/)
+- [Obsidian](https://obsidian.md/) 1.12+ (CLI 有効化: Settings > General > Advanced > Command Line Interface)
+
+### 1. Install
 
 ```bash
 uv tool install kb-mcp
 ```
 
-### 2. 初期設定
+### 2. Setup
 
 ```bash
 kb-mcp setup
 ```
 
 対話形式で以下を設定:
-- Obsidian Vault のパス（新規 or 既存）
+- Obsidian Vault のパス（新規作成 or 既存 Vault に統合）
 - タイムゾーン
 
 設定は `~/.config/kb/config.yml` に保存される。
 
 ### 3. MCP サーバー登録
+
+使用する AI ツールに合わせて登録する。複数ツールから同じ `kb-mcp` を共有できる。
 
 #### Claude Code
 
@@ -47,9 +54,24 @@ command = "kb-mcp"
 args = ["serve"]
 ```
 
-#### Copilot (VS Code)
+#### GitHub Copilot CLI
 
-`.vscode/mcp.json` または `~/.vscode/mcp.json` に追加:
+`~/.copilot/mcp-config.json` を作成（または追記）:
+
+```json
+{
+  "mcpServers": {
+    "kb": {
+      "command": "kb-mcp",
+      "args": ["serve"]
+    }
+  }
+}
+```
+
+#### Visual Studio Code (Copilot Chat)
+
+グローバル設定（全ワークスペースで有効）: `~/.vscode/mcp.json`
 
 ```json
 {
@@ -61,6 +83,8 @@ args = ["serve"]
   }
 }
 ```
+
+プロジェクト単位で設定する場合は `.vscode/mcp.json` に同じ内容を配置する。
 
 ### 4. Skills / Hooks インストール（オプション）
 
