@@ -268,7 +268,7 @@ def graduate() -> str:
 # --- Update tools ---
 
 @mcp.tool()
-async def update_check() -> str:
+def update_check() -> str:
     """Check if a newer version of kb-mcp is available on PyPI.
 
     Makes an outbound HTTPS request to pypi.org to fetch the latest version.
@@ -277,6 +277,9 @@ async def update_check() -> str:
     from kb_mcp.update import current_version, latest_version, is_outdated
 
     cur = current_version()
+    if cur is None:
+        return "Cannot determine current version (dev install?)"
+
     latest, err = latest_version()
     if err:
         return f"Version check failed: {err}"
@@ -292,11 +295,12 @@ async def update_check() -> str:
 
 
 @mcp.tool()
-async def update_apply() -> str:
+def update_apply() -> str:
     """Upgrade kb-mcp to the latest version using uv.
 
-    Downloads the package from a Python package index (network access required).
-    This network access is NOT controlled by Copilot's --allow-url.
+    Downloads the package from a Python package index (outbound network access required).
+    This is a subprocess call to uv, which manages its own network access
+    independently of any AI client URL restrictions.
 
     Prerequisites:
     - kb-mcp must be installed via 'uv tool install'
@@ -312,6 +316,8 @@ async def update_apply() -> str:
     )
 
     cur = current_version()
+    if cur is None:
+        return "Cannot determine current version (dev install?). Manual upgrade: uv tool upgrade kb-mcp"
 
     # Check if update is needed
     latest, err = latest_version()

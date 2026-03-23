@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import fcntl
 import importlib.metadata
 import json
 import shutil
@@ -18,9 +17,15 @@ from typing import Generator, IO
 from packaging.version import Version, InvalidVersion
 
 
-def current_version() -> str:
-    """Get the currently installed kb-mcp version."""
-    return importlib.metadata.version("kb-mcp")
+def current_version() -> str | None:
+    """Get the currently installed kb-mcp version.
+
+    Returns None if package metadata is not available (e.g. dev source checkout).
+    """
+    try:
+        return importlib.metadata.version("kb-mcp")
+    except importlib.metadata.PackageNotFoundError:
+        return None
 
 
 def latest_version(timeout: int = 5) -> tuple[str | None, str | None]:
@@ -142,7 +147,14 @@ def upgrade_lock() -> Generator[bool, None, None]:
     LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
     fd: IO | None = None
     try:
-        fd = open(LOCK_FILE, "w")
+        import fcntl
+    except ImportError:
+        # Windows: no flock, proceed without locking
+        yield True
+        return
+
+    try:
+        fd = open(LOCK_FILE, "a+")
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         yield True
     except (OSError, IOError):
@@ -160,7 +172,7 @@ def run_upgrade(uv_path: str) -> tuple[bool, str]:
     """Run uv tool upgrade. Returns (success, message)."""
     try:
         result = subprocess.run(
-            [uv_path, "tool", "upgrade", "kb-mcp"],
+            [uv_path, "tool", "upgrade", "--no-config", "kb-mcp"],
             capture_output=True,
             text=True,
             timeout=60,

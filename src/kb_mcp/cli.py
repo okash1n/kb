@@ -456,24 +456,33 @@ def cmd_doctor(args: argparse.Namespace) -> None:
 
     # kb-mcp command + version
     kb_cmd = shutil.which("kb-mcp")
-    from kb_mcp.update import current_version
-    ver = current_version()
-    _print_check("kb-mcp command", f"{kb_cmd} (v{ver})" if kb_cmd else "not found", bool(kb_cmd))
+    try:
+        from kb_mcp.update import current_version
+        ver = current_version()
+    except Exception:
+        ver = None
+    ver_label = f"v{ver}" if ver else "dev"
+    _print_check("kb-mcp command", f"{kb_cmd} ({ver_label})" if kb_cmd else "not found", bool(kb_cmd))
 
     # Version check
-    if not getattr(args, "no_version_check", False):
-        from kb_mcp.update import latest_version, is_outdated
-        latest, err = latest_version(timeout=2)
-        if err:
-            print(f"  version check: skipped ({err})")
-        elif latest:
-            outdated = is_outdated(ver, latest)
-            if outdated:
-                print(f"  → v{latest} available. Run: uv tool upgrade kb-mcp")
-            elif outdated is False:
-                print(f"  version: up to date")
-            else:
-                print(f"  version: {latest} available (comparison failed)")
+    if not getattr(args, "no_version_check", False) and ver:
+        try:
+            from kb_mcp.update import latest_version, is_outdated
+            latest, err = latest_version(timeout=2)
+            if err:
+                print(f"  version check: skipped ({err})")
+            elif latest:
+                outdated = is_outdated(ver, latest)
+                if outdated:
+                    print(f"  → v{latest} available. Run: uv tool upgrade kb-mcp")
+                elif outdated is False:
+                    print(f"  version: up to date")
+                else:
+                    print(f"  version: {latest} available (comparison failed)")
+        except Exception as e:
+            print(f"  version check: skipped ({e})")
+    elif not ver:
+        print(f"  version check: skipped (dev install, no package metadata)")
     else:
         print(f"  version check: skipped (--no-version-check)")
 
