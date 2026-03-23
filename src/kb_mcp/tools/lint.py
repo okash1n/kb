@@ -17,6 +17,14 @@ TIMESTAMP_PATTERN = re.compile(
 SLUG_FILENAME_PATTERN = re.compile(r"^.+--[0-9A-Z]{26}\.md$")
 SESSION_FILENAME_PATTERN = re.compile(r"^\d{8}-\d{4}--[0-9A-Z]{26}\.md$")
 
+# Obsidian unintended tag patterns:
+# - #<digits><non-digit> like #1) or #4） — observed to be tagged despite ) not being
+#   an official tag character (confirmed via Obsidian v1.8+ tag pane, see ADR config-dir-env-vars-and-tag-lint)
+# - #L<digits> like #L42 — GitHub line number references, valid tag per Obsidian spec
+UNINTENDED_TAG_PATTERN = re.compile(r'(?<!\S)#(?:\d+[^\s\d]|L\d+)')
+CODE_BLOCK_PATTERN = re.compile(r'```[\s\S]*?```')
+INLINE_CODE_PATTERN = re.compile(r'`[^`]+`')
+
 # Legacy ai_tool values that should be migrated
 AI_TOOL_MIGRATION = {
     "claude-code": "claude",
@@ -155,6 +163,19 @@ def kb_lint(project: str | None = None) -> str:
         # Session logs must be read-only (immutable)
         if parent_name == "session-log" and md_file.stat().st_mode & 0o222:
             issues.append(f"{rel}: session-log should be read-only (chmod 444)")
+
+        # Obsidian unintended tag detection
+        # Strip frontmatter, code blocks, and inline code before checking
+        body = text.split("---", 2)[2] if text.startswith("---") and text.count("---") >= 2 else text
+        body_stripped = CODE_BLOCK_PATTERN.sub("", body)
+        body_stripped = INLINE_CODE_PATTERN.sub("", body_stripped)
+        for line_no, line in enumerate(body_stripped.split("\n"), start=1):
+            for m in UNINTENDED_TAG_PATTERN.finditer(line):
+                tag_text = m.group()
+                warnings.append(
+                    f"{rel}:{line_no}: possible unintended Obsidian tag '{tag_text}' "
+                    f"— wrap in backticks to prevent (e.g. `{tag_text}`)"
+                )
 
     result_parts = []
     if issues:
