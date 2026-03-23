@@ -17,6 +17,15 @@ TIMESTAMP_PATTERN = re.compile(
 SLUG_FILENAME_PATTERN = re.compile(r"^.+--[0-9A-Z]{26}\.md$")
 SESSION_FILENAME_PATTERN = re.compile(r"^\d{8}-\d{4}--[0-9A-Z]{26}\.md$")
 
+# Obsidian unintended tag patterns:
+# - #<digits><non-digit> like #1) or #4） — observed to be tagged despite ) not being
+#   an official tag character (confirmed via Obsidian v1.8+ tag pane, see ADR config-dir-env-vars-and-tag-lint)
+# - #L<digits> like #L42 — GitHub line number references, valid tag per Obsidian spec
+# Exclude letters so #2026Q1, #1st-party etc. are not flagged.
+# Target: #1), #4）, #L42 — symbols/CJK after digits, or L+digits.
+UNINTENDED_TAG_PATTERN = re.compile(r'(?<!\S)#(?:\d+[^\s\dA-Za-z_/\-]|L\d+)')
+INLINE_CODE_PATTERN = re.compile(r'`[^`]+`')
+
 # Legacy ai_tool values that should be migrated
 AI_TOOL_MIGRATION = {
     "claude-code": "claude",
@@ -155,6 +164,42 @@ def kb_lint(project: str | None = None) -> str:
         # Session logs must be read-only (immutable)
         if parent_name == "session-log" and md_file.stat().st_mode & 0o222:
             issues.append(f"{rel}: session-log should be read-only (chmod 444)")
+
+        # Obsidian unintended tag detection — walk line-by-line for accurate line numbers
+        in_frontmatter = False
+        frontmatter_done = False
+        in_code_block = False
+        for line_no, line in enumerate(text.splitlines(), start=1):
+            stripped_line = line.strip()
+
+            # Skip YAML frontmatter at top of file
+            if not frontmatter_done:
+                if line_no == 1 and stripped_line == "---":
+                    in_frontmatter = True
+                    continue
+                if in_frontmatter:
+                    if stripped_line == "---":
+                        in_frontmatter = False
+                        frontmatter_done = True
+                    continue
+                if line_no > 1:
+                    frontmatter_done = True
+
+            # Skip fenced code blocks
+            if stripped_line.startswith("```"):
+                in_code_block = not in_code_block
+                continue
+            if in_code_block:
+                continue
+
+            # Strip inline code before scanning
+            scan_line = INLINE_CODE_PATTERN.sub("", line)
+            for m in UNINTENDED_TAG_PATTERN.finditer(scan_line):
+                tag_text = m.group()
+                warnings.append(
+                    f"{rel}:{line_no}: possible unintended Obsidian tag '{tag_text}' "
+                    f"— wrap in backticks to prevent (e.g. `{tag_text}`)"
+                )
 
     result_parts = []
     if issues:

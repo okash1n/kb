@@ -46,7 +46,7 @@ claude mcp add kb --scope user -- kb-mcp serve
 
 #### Codex CLI
 
-`~/.codex/config.toml` に追加:
+`~/.codex/config.toml`（`CODEX_HOME` 設定時はそちら）に追加:
 
 ```toml
 [mcp_servers.kb]
@@ -56,7 +56,7 @@ args = ["serve"]
 
 #### GitHub Copilot CLI
 
-`~/.copilot/mcp-config.json` を作成（または追記）:
+`~/.copilot/mcp-config.json`（`COPILOT_HOME` 設定時はそちら）を作成（または追記）:
 
 ```json
 {

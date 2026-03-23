@@ -18,6 +18,46 @@ from kb_mcp.config import (
 )
 
 
+# --- AI tool config directory helpers ---
+
+def _claude_config_dir() -> Path:
+    """Resolve Claude Code config directory (CLAUDE_CONFIG_DIR or ~/.claude)."""
+    return Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
+
+
+def _claude_config_json() -> Path:
+    """Resolve Claude Code main config file.
+
+    .claude.json is always at HOME — CLAUDE_CONFIG_DIR controls settings.json etc.
+    """
+    return Path.home() / ".claude.json"
+
+
+def _codex_home() -> Path | None:
+    """Resolve Codex CLI config directory (CODEX_HOME or ~/.codex).
+
+    Matches Codex CLI behavior:
+    - Empty string is treated as unset (falls back to ~/.codex)
+    - Non-empty value must be an existing directory (resolve + canonicalize)
+    - Returns None if CODEX_HOME is set but invalid (Codex itself would error)
+    """
+    val = os.environ.get("CODEX_HOME", "")
+    if val:
+        p = Path(val)
+        if p.is_dir():
+            return p.resolve()
+        return None  # Codex would error
+    return Path.home() / ".codex"
+
+
+def _copilot_home() -> Path:
+    """Resolve Copilot CLI config directory (COPILOT_HOME or ~/.copilot)."""
+    val = os.environ.get("COPILOT_HOME", "")
+    if val:
+        return Path(val).resolve()
+    return Path.home() / ".copilot"
+
+
 def cmd_serve(_args: argparse.Namespace) -> None:
     """Start the MCP server (stdio transport)."""
     from kb_mcp.server import mcp
@@ -306,7 +346,7 @@ def _install_claude_hook(kb_mcp_path: str, hooks_dir: Path) -> None:
     wrapper = _write_wrapper_script(hooks_dir, "claude-session-end", kb_mcp_path, "claude", "claude-code")
     print(f"✓ Wrapper script: {wrapper}")
     print(
-        "Add to ~/.claude/settings.json hooks section:\n"
+        f"Add to {_claude_config_dir() / 'settings.json'} hooks section:\n"
         '  "hooks": {\n'
         '    "Stop": [\n'
         f'      {{"command": "{wrapper}"}}\n'
@@ -320,7 +360,8 @@ def _install_copilot_hook(kb_mcp_path: str, hooks_dir: Path) -> None:
     import json
 
     wrapper = _write_wrapper_script(hooks_dir, "copilot-session-end", kb_mcp_path, "copilot", "copilot-cli")
-    config_path = Path.home() / ".copilot" / "config.json"
+    config_path = _copilot_home() / "config.json"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
 
     if config_path.exists():
         config = json.loads(config_path.read_text(encoding="utf-8"))
@@ -450,7 +491,7 @@ def cmd_doctor(args: argparse.Namespace) -> None:
         # Hooks
         if tool == "copilot":
             import json as _json
-            copilot_config = Path.home() / ".copilot" / "config.json"
+            copilot_config = _copilot_home() / "config.json"
             hook_ok = False
             wrapper_path = "n/a"
             if copilot_config.exists():
@@ -477,84 +518,62 @@ def _check_mcp_registered(tool: str, repo: str | None = None) -> tuple[bool, str
     import json as _json
 
     if tool == "claude":
-        # Check ~/.claude.json for mcpServers.kb
-        claude_config = Path.home() / ".claude.json"
+        claude_config = _claude_config_json()
         if not claude_config.exists():
-            return (False, "~/.claude.json not found")
+            return (False, f"{claude_config} not found")
         try:
             data = _json.loads(claude_config.read_text(encoding="utf-8"))
             servers = data.get("mcpServers", {})
             if "kb" in servers:
-                return (True, "registered in ~/.claude.json")
-            return (False, "not registered in ~/.claude.json")
+                return (True, f"registered in {claude_config}")
+            return (False, f"not registered in {claude_config}")
         except (_json.JSONDecodeError, OSError):
-            return (False, "~/.claude.json unreadable")
+            return (False, f"{claude_config} unreadable")
 
     elif tool == "copilot":
-        # User-level: Copilot CLI config + VS Code mcp.json (default profile only)
-        user_paths = [
-            Path.home() / ".copilot" / "mcp-config.json",
-            Path.home() / ".vscode" / "mcp.json",
-            Path.home() / ".config" / "Code" / "User" / "mcp.json",
-            Path.home() / "Library" / "Application Support" / "Code" / "User" / "mcp.json",
-        ]
-        for mcp_path in user_paths:
-            if mcp_path.exists():
-                try:
-                    data = _json.loads(mcp_path.read_text(encoding="utf-8"))
-                    servers = data.get("servers", data.get("mcpServers", {}))
-                    if "kb" in servers:
-                        return (True, f"registered in {mcp_path}")
-                except (_json.JSONDecodeError, OSError):
-                    continue
-
-        # Workspace-level: check <repo>/.vscode/mcp.json if --repo is given
-        if repo:
-            workspace_mcp = Path(repo) / ".vscode" / "mcp.json"
-            if workspace_mcp.exists():
-                try:
-                    data = _json.loads(workspace_mcp.read_text(encoding="utf-8"))
-                    servers = data.get("servers", data.get("mcpServers", {}))
-                    if "kb" in servers:
-                        return (True, f"registered in {workspace_mcp} (workspace)")
-                except (_json.JSONDecodeError, OSError):
-                    pass
-
-        return (False, "not found (checked: ~/.copilot/mcp-config.json, VS Code default profile mcp.json"
-                + (f", {Path(repo) / '.vscode/mcp.json'}" if repo else "") + ")")
-
-    elif tool == "codex":
-        # Check Codex config for MCP — structure-based parse
-        codex_home = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
-
-        # config.json: look for mcpServers or mcp_servers key containing "kb"
-        config_json = codex_home / "config.json"
-        if config_json.exists():
+        # Copilot CLI config (primary)
+        copilot_dir = _copilot_home()
+        mcp_config = copilot_dir / "mcp-config.json"
+        if mcp_config.exists():
             try:
-                data = _json.loads(config_json.read_text(encoding="utf-8"))
-                for key in ("mcpServers", "mcp_servers", "servers"):
-                    servers = data.get(key, {})
-                    if isinstance(servers, dict) and "kb" in servers:
-                        return (True, f"registered in {config_json} [{key}]")
+                data = _json.loads(mcp_config.read_text(encoding="utf-8"))
+                servers = data.get("servers", data.get("mcpServers", {}))
+                if "kb" in servers:
+                    return (True, f"registered in {mcp_config}")
             except (_json.JSONDecodeError, OSError):
                 pass
+        return (False, f"not found in {mcp_config} (Copilot CLI only — VS Code mcp.json is not checked)")
 
-        # config.toml: parse as TOML if available, fallback to section-aware grep
-        config_toml = codex_home / "config.toml"
+    elif tool == "codex":
+        codex_dir = _codex_home()
+        if codex_dir is None:
+            codex_home_val = os.environ.get("CODEX_HOME", "")
+            return (False, f"CODEX_HOME={codex_home_val!r} is invalid (not a directory). Codex would error.")
+
+        # config.toml (primary)
+        config_toml = codex_dir / "config.toml"
         if config_toml.exists():
             try:
-                text = config_toml.read_text(encoding="utf-8")
-                # Look for [mcp_servers.kb] or [mcpServers.kb] section headers
                 import re
+                text = config_toml.read_text(encoding="utf-8")
                 if re.search(r'\[(mcp_servers|mcpServers)\.kb\]', text):
-                    return (True, f"registered in {config_toml}")
-                # Also check for server entries like name = "kb"
-                if re.search(r'name\s*=\s*["\']kb["\']', text):
                     return (True, f"registered in {config_toml}")
             except OSError:
                 pass
 
-        return (False, f"not found in {codex_home}")
+        # config.json (legacy fallback)
+        config_json = codex_dir / "config.json"
+        if config_json.exists():
+            try:
+                data = _json.loads(config_json.read_text(encoding="utf-8"))
+                for key in ("mcpServers", "mcp_servers"):
+                    servers = data.get(key, {})
+                    if isinstance(servers, dict) and "kb" in servers:
+                        return (True, f"registered in {config_json} (legacy — consider migrating to config.toml)")
+            except (_json.JSONDecodeError, OSError):
+                pass
+
+        return (False, f"not found in {codex_dir}")
 
     return (False, "unknown tool")
 
