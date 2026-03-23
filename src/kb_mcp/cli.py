@@ -531,6 +531,7 @@ def _check_mcp_registered(tool: str, repo: str | None = None) -> tuple[bool, str
             return (False, f"{claude_config} unreadable")
 
     elif tool == "copilot":
+        # Copilot CLI config (primary)
         copilot_dir = _copilot_home()
         mcp_config = copilot_dir / "mcp-config.json"
         if mcp_config.exists():
@@ -541,7 +542,7 @@ def _check_mcp_registered(tool: str, repo: str | None = None) -> tuple[bool, str
                     return (True, f"registered in {mcp_config}")
             except (_json.JSONDecodeError, OSError):
                 pass
-        return (False, f"not found in {mcp_config}")
+        return (False, f"not found in {mcp_config} (Copilot CLI only — VS Code mcp.json is not checked)")
 
     elif tool == "codex":
         codex_dir = _codex_home()
@@ -549,7 +550,7 @@ def _check_mcp_registered(tool: str, repo: str | None = None) -> tuple[bool, str
             codex_home_val = os.environ.get("CODEX_HOME", "")
             return (False, f"CODEX_HOME={codex_home_val!r} is invalid (not a directory). Codex would error.")
 
-        # config.toml only (config.json is legacy)
+        # config.toml (primary)
         config_toml = codex_dir / "config.toml"
         if config_toml.exists():
             try:
@@ -558,6 +559,18 @@ def _check_mcp_registered(tool: str, repo: str | None = None) -> tuple[bool, str
                 if re.search(r'\[(mcp_servers|mcpServers)\.kb\]', text):
                     return (True, f"registered in {config_toml}")
             except OSError:
+                pass
+
+        # config.json (legacy fallback)
+        config_json = codex_dir / "config.json"
+        if config_json.exists():
+            try:
+                data = _json.loads(config_json.read_text(encoding="utf-8"))
+                for key in ("mcpServers", "mcp_servers"):
+                    servers = data.get(key, {})
+                    if isinstance(servers, dict) and "kb" in servers:
+                        return (True, f"registered in {config_json} (legacy — consider migrating to config.toml)")
+            except (_json.JSONDecodeError, OSError):
                 pass
 
         return (False, f"not found in {codex_dir}")
