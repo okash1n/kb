@@ -3,6 +3,7 @@
 from pathlib import Path
 
 from kb_mcp.config import inbox_dir, kb_data_root, projects_dir, safe_resolve
+from kb_mcp.vault_git import vault_git_sync
 from kb_mcp.note import (
     build_filename,
     build_frontmatter,
@@ -69,7 +70,11 @@ def _write_note(
     filepath = d / filename
     filepath.write_text(f"{fm}\n\n{content}\n", encoding="utf-8")
     rel = filepath.relative_to(kb_data_root())
-    return f"Saved: {rel} (id: {ulid})"
+    msg = f"Saved: {rel} (id: {ulid})"
+    git_msg = vault_git_sync(filepath)
+    if git_msg:
+        msg += f"\n{git_msg}"
+    return msg
 
 
 def kb_adr(
@@ -210,7 +215,11 @@ def kb_session(
     filepath.write_text(f"{fm}\n\n{content}\n", encoding="utf-8")
     filepath.chmod(0o444)  # read-only — session logs are immutable
     rel = filepath.relative_to(kb_data_root())
-    return f"Saved: {rel} (id: {ulid})"
+    msg = f"Saved: {rel} (id: {ulid})"
+    git_msg = vault_git_sync(filepath)
+    if git_msg:
+        msg += f"\n{git_msg}"
+    return msg
 
 
 def kb_draft(
@@ -252,4 +261,8 @@ def kb_draft(
     filepath = d / filename
     filepath.write_text(f"{fm}\n\n{content}\n", encoding="utf-8")
     rel = filepath.relative_to(kb_data_root())
-    return f"Saved: {rel} (id: {ulid})"
+    msg = f"Saved: {rel} (id: {ulid})"
+    git_msg = vault_git_sync(filepath)
+    if git_msg:
+        msg += f"\n{git_msg}"
+    return msg
