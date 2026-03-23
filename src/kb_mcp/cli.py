@@ -3,6 +3,7 @@
 import argparse
 import os
 import shutil
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -194,12 +195,31 @@ def cmd_setup(args: argparse.Namespace) -> None:
         # Timezone
         tz = _prompt("? Timezone", "Asia/Tokyo")
 
+    # Detect vault git
+    vault_git = False
+    vault_p = Path(vault_path)
+    if vault_p.exists():
+        try:
+            git_check = subprocess.run(
+                ["git", "-C", str(vault_p), "rev-parse", "--is-inside-work-tree"],
+                capture_output=True, text=True, timeout=5,
+            )
+        except subprocess.TimeoutExpired:
+            git_check = None
+        if git_check and git_check.returncode == 0:
+            if non_interactive:
+                vault_git = True
+            else:
+                yn = _prompt("? Vault is a git repo. Auto commit+push on save?", "Y")
+                vault_git = yn.upper() != "N"
+
     # Build config
     config_data = {
         "vault_path": vault_path,
         "kb_root": kb_root,
         "obsidian_cli": obsidian_cli,
         "timezone": tz,
+        "vault_git": vault_git,
     }
 
     # Validate before writing
