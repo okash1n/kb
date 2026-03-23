@@ -208,7 +208,7 @@ def cmd_setup(args: argparse.Namespace) -> None:
             git_check = None
         if git_check and git_check.returncode == 0:
             if non_interactive:
-                vault_git = True
+                vault_git = args.vault_git if args.vault_git is not None else True
             else:
                 yn = _prompt("? Vault is a git repo. Auto commit+push on save?", "Y")
                 vault_git = yn.upper() != "N"
@@ -283,7 +283,7 @@ def cmd_setup(args: argparse.Namespace) -> None:
 
     print(f"\nkb is ready! Next steps:")
     print(f"  kb-mcp install hooks --claude     # Install hooks for Claude Code")
-    print(f"  kb-mcp install hooks --claude     # Install hooks for Claude Code")
+    print(f"  kb-mcp install hooks --codex      # Install hooks for Codex CLI")
 
 
 def _get_assets_dir() -> Path:
@@ -667,6 +667,8 @@ def build_parser() -> argparse.ArgumentParser:
     setup_parser.add_argument("--kb-root", help="kb root within vault (default: empty)")
     setup_parser.add_argument("--obsidian-cli", help="Obsidian CLI path or 'auto'")
     setup_parser.add_argument("--timezone", help="Timezone (default: Asia/Tokyo)")
+    setup_parser.add_argument("--vault-git", action="store_true", default=None, help="Enable vault git sync")
+    setup_parser.add_argument("--no-vault-git", dest="vault_git", action="store_false", help="Disable vault git sync")
 
     # install
     install_parser = sub.add_parser("install", help="Install hooks")

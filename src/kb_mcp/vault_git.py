@@ -98,6 +98,11 @@ def vault_git_sync(filepath: Path) -> str | None:
             if result.returncode != 0:
                 return f"vault_git: git commit failed: {result.stderr.strip()}"
 
+            # Pull --rebase before push (handle multi-machine setups)
+            pull_result = _git_run(vault, "pull", "--rebase", "--autostash")
+            if pull_result.returncode != 0:
+                return f"vault_git: committed but pull --rebase failed: {pull_result.stderr.strip()}"
+
             # Push (best-effort, don't fail the save)
             push_result = _git_run(vault, "push")
             if push_result.returncode != 0:
