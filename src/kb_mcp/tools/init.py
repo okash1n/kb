@@ -18,16 +18,17 @@ def kb_init(
     cwd: str | None = None,
     repo: str | None = None,
 ) -> str:
-    """Initialize a new project directory structure.
+    """Initialize a new project directory structure in the kb store.
 
-    Creates notes/projects/{project}/ with subdirectories and .kb-project.yml.
+    Creates <kb-store>/projects/{project}/ with subdirectories and .kb-project.yml.
+    The kb store is an external Obsidian Vault, not the current repository.
 
     If the project already exists but .kb-project.yml is missing, backfills it.
 
     Args:
         project: Project name
-        cwd: Working directory (used to detect git remote for .kb-project.yml)
-        repo: Explicit repo identifier
+        cwd: Working directory — used ONLY to detect git remote for .kb-project.yml, not as save destination
+        repo: Explicit repo identifier for .kb-project.yml association
     """
     project_dir = safe_resolve(projects_dir(), project)
     yml_path = project_dir / ".kb-project.yml"

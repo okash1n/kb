@@ -19,15 +19,20 @@ def init(
     cwd: str | None = None,
     repo: str | None = None,
 ) -> str:
-    """Initialize a new project in kb.
+    """Initialize a new project in the kb store (NOT in the current repository).
 
-    Creates notes/projects/{project}/ with subdirectories and .kb-project.yml.
+    Creates <kb-store>/projects/{project}/ with subdirectories (adr/, gap/,
+    session-log/, knowledge/, draft/) and .kb-project.yml.
+
+    Notes are stored in the external Obsidian Vault configured by `kb-mcp setup`,
+    not in the current working directory or repository.
+
     If the project already exists, backfills .kb-project.yml if missing.
 
     Args:
-        project: Project name
-        cwd: Working directory (used to detect git remote for .kb-project.yml)
-        repo: Explicit repo identifier (e.g. github.com/owner/repo)
+        project: Project name to create
+        cwd: Working directory — used ONLY to detect git remote for .kb-project.yml association, NOT as a save destination
+        repo: Explicit repo identifier (e.g. github.com/owner/repo) — used for .kb-project.yml association
     """
     return kb_init(project=project, cwd=cwd, repo=repo)
 
@@ -56,7 +61,9 @@ def adr(
     When superseding a previous ADR, update the old one's status to 'superseded'
     and link them via 'related'.
 
+    Notes are saved to the kb store (Obsidian Vault), not to the current repository.
     Project is auto-resolved from cwd/repo if not specified.
+    cwd/repo are used only for project resolution, not as save destinations.
     """
     return kb_adr(
         slug=slug, summary=summary, content=content,
@@ -87,7 +94,9 @@ def gap(
     - Why the gap occurred
     - How to avoid it in the future
 
+    Notes are saved to the kb store (Obsidian Vault), not to the current repository.
     Project is auto-resolved from cwd/repo if not specified.
+    cwd/repo are used only for project resolution, not as save destinations.
     """
     return kb_gap(
         slug=slug, summary=summary, content=content,
@@ -116,7 +125,9 @@ def knowledge(
     worth preserving for future reference. No gap involved — just
     useful information encountered during work.
 
+    Notes are saved to the kb store (Obsidian Vault), not to the current repository.
     Project is auto-resolved from cwd/repo if not specified.
+    cwd/repo are used only for project resolution, not as save destinations.
     """
     return kb_knowledge(
         slug=slug, summary=summary, content=content,
@@ -144,7 +155,9 @@ def session(
     Captures what was worked on, decisions made, gaps encountered,
     and notable context. Pay special attention to recording gaps.
 
+    Notes are saved to the kb store (Obsidian Vault), not to the current repository.
     Project is auto-resolved from cwd/repo if not specified.
+    cwd/repo are used only for project resolution, not as save destinations.
     """
     return kb_session(
         summary=summary, content=content,
@@ -170,10 +183,12 @@ def draft(
     """Save a draft — an idea, a want-to-do, or a casual memo.
 
     If project is resolved (from explicit name, cwd, or repo),
-    saves to the project's draft/ directory.
-    If project cannot be resolved, saves to inbox/.
+    saves to the project's draft/ directory in the kb store.
+    If project cannot be resolved, saves to inbox/ in the kb store.
 
+    Notes are saved to the kb store (Obsidian Vault), not to the current repository.
     Project is auto-resolved from cwd/repo if not specified.
+    cwd/repo are used only for project resolution, not as save destinations.
     """
     return kb_draft(
         slug=slug, summary=summary, content=content,
