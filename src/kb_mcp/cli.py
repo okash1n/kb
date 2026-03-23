@@ -454,9 +454,28 @@ def cmd_doctor(args: argparse.Namespace) -> None:
 
     repo = None  # reserved for future use
 
-    # kb-mcp command
+    # kb-mcp command + version
     kb_cmd = shutil.which("kb-mcp")
-    _print_check("kb-mcp command", kb_cmd or "not found", bool(kb_cmd))
+    from kb_mcp.update import current_version
+    ver = current_version()
+    _print_check("kb-mcp command", f"{kb_cmd} (v{ver})" if kb_cmd else "not found", bool(kb_cmd))
+
+    # Version check
+    if not getattr(args, "no_version_check", False):
+        from kb_mcp.update import latest_version, is_outdated
+        latest, err = latest_version(timeout=2)
+        if err:
+            print(f"  version check: skipped ({err})")
+        elif latest:
+            outdated = is_outdated(ver, latest)
+            if outdated:
+                print(f"  → v{latest} available. Run: uv tool upgrade kb-mcp")
+            elif outdated is False:
+                print(f"  version: up to date")
+            else:
+                print(f"  version: {latest} available (comparison failed)")
+    else:
+        print(f"  version check: skipped (--no-version-check)")
 
     # Config
     cfg_path = config_dir() / "config.yml"
@@ -638,7 +657,8 @@ def build_parser() -> argparse.ArgumentParser:
     session_end_parser.add_argument("--client", required=True)
 
     # doctor
-    sub.add_parser("doctor", help="Diagnose installation state")
+    doctor_parser = sub.add_parser("doctor", help="Diagnose installation state")
+    doctor_parser.add_argument("--no-version-check", action="store_true", help="Skip PyPI version check")
 
     return parser
 

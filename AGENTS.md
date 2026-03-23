@@ -25,7 +25,6 @@
   - `session-log/` — セッションログ
   - `knowledge/` — 開発中に得た知識
   - `draft/` — やりたいこと・アイデアメモ
-  - `history.md` — プロジェクト変遷まとめ
 - `inbox/` — プロジェクトに紐づかないアイデア・雑多なメモ
 - `general/` — プロジェクト横断の共通知見（kb_graduateで昇格）
   - `knowledge/` — 共通知識
