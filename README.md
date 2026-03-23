@@ -69,30 +69,6 @@ args = ["serve"]
 }
 ```
 
-#### Visual Studio Code (Copilot Chat)
-
-コマンドパレット（`Cmd+Shift+P`）から:
-
-1. `MCP: Add Server` を選択
-2. `Command (stdio)` を選択
-3. コマンド → `kb-mcp serve` を入力してエンター
-4. サーバー ID → `kb` を入力してエンター
-5. スコープ → `Global` を選択（全ワークスペースで有効にする場合）
-
-または手動で `~/.vscode/mcp.json`（グローバル）に追加:
-
-```json
-{
-  "servers": {
-    "kb": {
-      "command": "kb-mcp",
-      "args": ["serve"]
-    }
-  }
-}
-```
-
-プロジェクト単位で設定する場合は `.vscode/mcp.json` に同じ内容を配置する。
 
 ### 4. Skills / Hooks インストール（オプション）
 
