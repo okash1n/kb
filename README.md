@@ -94,7 +94,6 @@ kb-mcp doctor
     session-log/    # セッションログ
     knowledge/      # 開発中に得た知識
     draft/          # やりたいこと・アイデアメモ
-    history.md      # プロジェクト変遷まとめ
   inbox/            # プロジェクトに紐づかないアイデア
   general/
     knowledge/      # プロジェクト横断の共通知見

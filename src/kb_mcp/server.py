@@ -265,5 +265,99 @@ def graduate() -> str:
     return kb_graduate()
 
 
+# --- Update tools ---
+
+@mcp.tool()
+def update_check() -> str:
+    """Check if a newer version of kb-mcp is available on PyPI.
+
+    Makes an outbound HTTPS request to pypi.org to fetch the latest version.
+    No changes are made to the system.
+    """
+    from kb_mcp.update import current_version, latest_version, is_outdated
+
+    cur = current_version()
+    if cur is None:
+        return "Cannot determine current version (dev install?)"
+
+    latest, err = latest_version()
+    if err:
+        return f"Version check failed: {err}"
+    if latest is None:
+        return "Version check failed: unknown error"
+
+    outdated = is_outdated(cur, latest)
+    if outdated is None:
+        return f"kb-mcp {cur} (current), {latest} (available) — version comparison failed"
+    if outdated:
+        return f"kb-mcp {cur} (current) → {latest} (available)\nUse kb_update_apply to upgrade."
+    return f"kb-mcp {cur} — already up to date."
+
+
+@mcp.tool()
+def update_apply() -> str:
+    """Upgrade kb-mcp to the latest version using uv.
+
+    Downloads the package from a Python package index (outbound network access required).
+    This is a subprocess call to uv, which manages its own network access
+    independently of any AI client URL restrictions.
+
+    Prerequisites:
+    - kb-mcp must be installed via 'uv tool install'
+    - uv must be available in PATH
+    - No other kb_update_apply must be running on this host
+
+    After upgrade, the MCP server process in THIS session remains on the old version.
+    The new version takes effect on next session start (new MCP server process).
+    """
+    from kb_mcp.update import (
+        current_version, latest_version, is_outdated,
+        is_uv_managed, upgrade_lock, run_upgrade,
+    )
+
+    cur = current_version()
+    if cur is None:
+        return "Cannot determine current version (dev install?). Manual upgrade: uv tool upgrade kb-mcp"
+
+    # Check if update is needed
+    latest, err = latest_version()
+    if err:
+        return f"Version check failed: {err}"
+    if latest is None:
+        return "Version check failed: unknown error"
+
+    outdated = is_outdated(cur, latest)
+    if outdated is False:
+        return f"kb-mcp {cur} — already up to date."
+    if outdated is None:
+        return f"Version comparison failed: {cur} vs {latest}"
+
+    # Check if uv-managed
+    managed, uv_or_reason = is_uv_managed()
+    if not managed:
+        return (
+            f"Cannot auto-upgrade: {uv_or_reason}\n"
+            f"Manual upgrade: uv tool upgrade kb-mcp (if uv-managed) "
+            f"or pip install --upgrade kb-mcp"
+        )
+
+    uv_path = uv_or_reason  # When managed=True, second element is uv_path
+
+    # Acquire lock
+    with upgrade_lock() as acquired:
+        if not acquired:
+            return "Another session is currently upgrading kb-mcp. Try again later."
+
+        success, msg = run_upgrade(uv_path)
+
+    if success:
+        return (
+            f"✓ kb-mcp upgraded: {cur} → {latest}\n"
+            f"⚠ This session's MCP server remains on {cur}.\n"
+            f"  Start a new session or reconnect MCP to use {latest}."
+        )
+    return f"Upgrade failed: {msg}"
+
+
 if __name__ == "__main__":
     mcp.run(transport="stdio")
