@@ -70,10 +70,9 @@ args = ["serve"]
 ```
 
 
-### 4. Skills / Hooks インストール（オプション）
+### 4. Hooks インストール（オプション）
 
 ```bash
-kb-mcp install skills --claude --execute   # Claude Code 用スキル配置
 kb-mcp install hooks --claude              # Claude Code 用フック配置
 kb-mcp install hooks --codex               # Codex CLI 用フック配置
 ```
@@ -126,7 +125,6 @@ kb-mcp doctor
 | `kb-mcp setup` | 初期設定（Vault パス、タイムゾーン） |
 | `kb-mcp serve` | MCP サーバー起動 |
 | `kb-mcp config get <key>` | 設定値取得 |
-| `kb-mcp install skills` | スキルファイル配置 |
 | `kb-mcp install hooks` | フック配置 |
 | `kb-mcp doctor` | 環境診断 |
 

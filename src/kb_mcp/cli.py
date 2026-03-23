@@ -222,7 +222,7 @@ def cmd_setup(args: argparse.Namespace) -> None:
         print(f"✓ Created {rel}/ in vault")
 
     print(f"\nkb is ready! Next steps:")
-    print(f"  kb-mcp install skills --claude    # Install skills for Claude Code")
+    print(f"  kb-mcp install hooks --claude     # Install hooks for Claude Code")
     print(f"  kb-mcp install hooks --claude     # Install hooks for Claude Code")
 
 
@@ -231,55 +231,6 @@ def _get_assets_dir() -> Path:
     from importlib.resources import files
 
     return Path(str(files("kb_mcp.assets")))
-
-
-SKILLS_TARGETS: dict[str, Path] = {
-    "claude": Path.home() / ".claude" / "skills",
-    "copilot": Path.home() / ".copilot" / "skills",
-    "codex": Path.home() / ".codex" / "skills",
-}
-
-
-def cmd_install_skills(args: argparse.Namespace) -> None:
-    """Install skills for specified AI tool(s). Dry-run by default."""
-    tools = _resolve_tool_targets(args)
-    execute = getattr(args, "execute", False)
-    skills_src = _get_assets_dir() / "skills"
-
-    if not skills_src.exists():
-        print("ERROR: skills assets not found", file=sys.stderr)
-        sys.exit(1)
-
-    skill_dirs = [d for d in skills_src.iterdir() if d.is_dir() and not d.name.startswith("_")]
-
-    for tool in tools:
-        target_base = SKILLS_TARGETS.get(tool)
-        if not target_base:
-            print(f"Unknown tool: {tool}", file=sys.stderr)
-            continue
-
-        if not execute:
-            # Dry-run: show what would be done
-            print(f"[dry-run] {tool}: {len(skill_dirs)} skills → {target_base}")
-            for skill_dir in skill_dirs:
-                target = target_base / skill_dir.name
-                status = "overwrite" if target.exists() else "new"
-                print(f"  {skill_dir.name} ({status})")
-            continue
-
-        target_base.mkdir(parents=True, exist_ok=True)
-        count = 0
-        for skill_dir in skill_dirs:
-            target = target_base / skill_dir.name
-            if target.exists():
-                shutil.rmtree(target)
-            shutil.copytree(skill_dir, target)
-            count += 1
-
-        print(f"✓ {count} skills installed to {target_base} ({tool})")
-
-    if not execute:
-        print("\nThis is a dry run. Add --execute to apply.")
 
 
 def _resolve_tool_targets(args: argparse.Namespace) -> list[str]:
@@ -482,11 +433,6 @@ def cmd_doctor(args: argparse.Namespace) -> None:
     obs_cli = _detect_obsidian_cli()
     _print_check("Obsidian CLI", obs_cli or "not found (degraded mode)", bool(obs_cli))
 
-    # Assets
-    assets = _get_assets_dir()
-    skill_count = len([d for d in (assets / "skills").iterdir() if d.is_dir() and not d.name.startswith("_")]) if (assets / "skills").exists() else 0
-    _print_check("Assets", f"skills: {skill_count}", skill_count > 0)
-
     # Per-tool status
     print()
     for tool, label in [("claude", "Claude Code"), ("copilot", "Copilot"), ("codex", "Codex")]:
@@ -495,11 +441,6 @@ def cmd_doctor(args: argparse.Namespace) -> None:
         # MCP registration
         mcp_ok, mcp_detail = _check_mcp_registered(tool, repo=repo)
         _print_check("    MCP server", mcp_detail, mcp_ok, indent=4)
-
-        # Skills (only count kb-* prefixed)
-        target = SKILLS_TARGETS.get(tool, Path())
-        installed = len([d for d in target.iterdir() if d.is_dir() and d.name.startswith("kb-")]) if target.exists() else 0
-        _print_check("    Skills", f"{installed}/{skill_count} installed", installed == skill_count, indent=4)
 
         # Hooks
         if tool == "copilot":
@@ -665,15 +606,8 @@ def build_parser() -> argparse.ArgumentParser:
     setup_parser.add_argument("--timezone", help="Timezone (default: Asia/Tokyo)")
 
     # install
-    install_parser = sub.add_parser("install", help="Install skills/hooks")
+    install_parser = sub.add_parser("install", help="Install hooks")
     install_sub = install_parser.add_subparsers(dest="install_command")
-
-    skills_parser = install_sub.add_parser("skills", help="Install skills for AI tools")
-    skills_parser.add_argument("--claude", action="store_true")
-    skills_parser.add_argument("--copilot", action="store_true")
-    skills_parser.add_argument("--codex", action="store_true")
-    skills_parser.add_argument("--all", action="store_true")
-    skills_parser.add_argument("--execute", action="store_true", help="Actually install (default is dry-run)")
 
     hooks_parser = install_sub.add_parser("hooks", help="Install hooks for AI tools")
     hooks_parser.add_argument("--claude", action="store_true")
@@ -711,9 +645,7 @@ def main() -> None:
     elif args.command == "setup":
         cmd_setup(args)
     elif args.command == "install":
-        if args.install_command == "skills":
-            cmd_install_skills(args)
-        elif args.install_command == "hooks":
+        if args.install_command == "hooks":
             cmd_install_hooks(args)
         else:
             parser.parse_args(["install", "--help"])
