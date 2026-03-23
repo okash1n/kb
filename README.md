@@ -73,9 +73,7 @@ args = ["serve"]
 ### 4. Hooks インストール（オプション）
 
 ```bash
-kb-mcp install hooks --claude              # Claude Code 用フック配置
-kb-mcp install hooks --codex               # Codex CLI 用フック配置
-kb-mcp install hooks --copilot --repo .    # Copilot CLI 用フック配置（per-repo）
+kb-mcp install hooks --all                 # 全ツールにフック配置
 ```
 
 ### 5. 動作確認

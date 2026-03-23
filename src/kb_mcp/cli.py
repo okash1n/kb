@@ -253,9 +253,9 @@ def _hooks_lib_dir() -> Path:
 
 
 def _resolve_hooks_targets(args: argparse.Namespace) -> list[str]:
-    """Resolve hook targets. --all means Claude/Codex only (Copilot is per-repo)."""
+    """Resolve hook targets."""
     if getattr(args, "all", False):
-        return ["claude", "codex"]  # Copilot excluded — per-repo
+        return ["claude", "copilot", "codex"]
     tools = []
     for t in ("claude", "copilot", "codex"):
         if getattr(args, t, False):
@@ -280,14 +280,7 @@ def cmd_install_hooks(args: argparse.Namespace) -> None:
 
     for tool in tools:
         if tool == "copilot":
-            repo = getattr(args, "repo", None)
-            if not repo:
-                print(
-                    "Copilot hooks are per-repo. Specify --repo <path>:\n"
-                    f"  kb-mcp install hooks --copilot --repo /path/to/project"
-                )
-                continue
-            _install_copilot_hook(kb_mcp_path, hooks_dir, repo)
+            _install_copilot_hook(kb_mcp_path, hooks_dir)
         elif tool == "claude":
             _install_claude_hook(kb_mcp_path, hooks_dir)
         elif tool == "codex":
@@ -322,25 +315,37 @@ def _install_claude_hook(kb_mcp_path: str, hooks_dir: Path) -> None:
     )
 
 
-def _install_copilot_hook(kb_mcp_path: str, hooks_dir: Path, repo: str) -> None:
-    """Install Copilot session-end hook for a specific repo."""
-    wrapper = _write_wrapper_script(hooks_dir, "copilot-session-end", kb_mcp_path, "copilot", "copilot-cli")
-    hook_dir = Path(repo) / ".github" / "hooks"
-    hook_dir.mkdir(parents=True, exist_ok=True)
-    hook_json = hook_dir / "session-end.json"
+def _install_copilot_hook(kb_mcp_path: str, hooks_dir: Path) -> None:
+    """Install Copilot session-end hook to global config.json."""
     import json
-    import shlex
-    hook_data = {
-        "version": 1,
-        "hooks": {
-            "sessionEnd": [
-                {"bash": shlex.quote(str(wrapper))}
-            ]
-        }
-    }
-    hook_json.write_text(json.dumps(hook_data, indent=2) + "\n", encoding="utf-8")
+
+    wrapper = _write_wrapper_script(hooks_dir, "copilot-session-end", kb_mcp_path, "copilot", "copilot-cli")
+    config_path = Path.home() / ".copilot" / "config.json"
+
+    if config_path.exists():
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+    else:
+        config = {}
+
+    hooks = config.setdefault("hooks", {})
+    session_end = hooks.setdefault("session-end", [])
+
+    # Check if already installed
+    wrapper_str = str(wrapper)
+    already = any(wrapper_str in h.get("bash", "") for h in session_end)
+    if already:
+        print(f"✓ Copilot hook already configured in {config_path}")
+        return
+
+    session_end.append({"bash": wrapper_str})
+
+    # Atomic write
+    tmp = config_path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+    tmp.replace(config_path)
+
     print(f"✓ Wrapper script: {wrapper}")
-    print(f"✓ Hook JSON written to {hook_json}")
+    print(f"✓ Hook added to {config_path}")
 
 
 def _install_codex_hook(kb_mcp_path: str, hooks_dir: Path) -> None:
@@ -406,7 +411,7 @@ def cmd_doctor(args: argparse.Namespace) -> None:
     """Diagnose installation state."""
     import platform as plat
 
-    repo = getattr(args, "repo", None)
+    repo = None  # reserved for future use
 
     # kb-mcp command
     kb_cmd = shutil.which("kb-mcp")
@@ -444,28 +449,19 @@ def cmd_doctor(args: argparse.Namespace) -> None:
 
         # Hooks
         if tool == "copilot":
-            if repo:
-                import json as _json
-                import shlex as _shlex
-
-                hook_json = Path(repo) / ".github" / "hooks" / "session-end.json"
-                json_ok = hook_json.exists()
-                wrapper_path = "n/a"
-                wrapper_ok = False
-                if json_ok:
-                    try:
-                        data = _json.loads(hook_json.read_text(encoding="utf-8"))
-                        bash_cmd = data.get("hooks", {}).get("sessionEnd", [{}])[0].get("bash", "")
-                        parts = _shlex.split(bash_cmd) if bash_cmd else []
-                        wrapper_path = parts[0] if parts else "n/a"
-                        wrapper_ok = Path(wrapper_path).exists() if wrapper_path != "n/a" else False
-                    except (KeyError, IndexError, _json.JSONDecodeError, OSError, ValueError):
-                        wrapper_path = "invalid JSON"
-                        wrapper_ok = False
-                _print_check("    Hook JSON", str(hook_json), json_ok, indent=4)
-                _print_check("    Wrapper", wrapper_path, wrapper_ok, indent=4)
-            else:
-                print("    Hooks:         [repo_required] per-repo — use --repo to check")
+            import json as _json
+            copilot_config = Path.home() / ".copilot" / "config.json"
+            hook_ok = False
+            wrapper_path = "n/a"
+            if copilot_config.exists():
+                try:
+                    data = _json.loads(copilot_config.read_text(encoding="utf-8"))
+                    hooks = data.get("hooks", {}).get("session-end", [])
+                    wrapper_path = hooks[0].get("bash", "") if hooks else ""
+                    hook_ok = bool(wrapper_path) and Path(wrapper_path).exists()
+                except (KeyError, IndexError, _json.JSONDecodeError, OSError, ValueError):
+                    wrapper_path = "invalid config"
+            _print_check("    Hooks", wrapper_path or "not configured", hook_ok, indent=4)
         else:
             wrapper = _hooks_lib_dir() / f"{tool}-session-end.sh"
             _print_check("    Hooks", str(wrapper), wrapper.exists(), indent=4)
@@ -613,8 +609,7 @@ def build_parser() -> argparse.ArgumentParser:
     hooks_parser.add_argument("--claude", action="store_true")
     hooks_parser.add_argument("--copilot", action="store_true")
     hooks_parser.add_argument("--codex", action="store_true")
-    hooks_parser.add_argument("--all", action="store_true", help="Claude/Codex only (Copilot is per-repo)")
-    hooks_parser.add_argument("--repo", help="Repository path (required for Copilot)")
+    hooks_parser.add_argument("--all", action="store_true", help="All tools")
 
     # hook (execution entry point)
     hook_parser = sub.add_parser("hook", help="Hook execution commands")
@@ -624,8 +619,7 @@ def build_parser() -> argparse.ArgumentParser:
     session_end_parser.add_argument("--client", required=True)
 
     # doctor
-    doctor_parser = sub.add_parser("doctor", help="Diagnose installation state")
-    doctor_parser.add_argument("--repo", help="Repository path for per-repo hook check")
+    sub.add_parser("doctor", help="Diagnose installation state")
 
     return parser
 
