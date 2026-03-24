@@ -1,30 +1,25 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# install.sh — Installation instructions for Claude Code session-end hook
-#
-# Claude Code uses Stop hooks configured in ~/.claude/settings.json.
-# This script prints the instructions; it does NOT modify settings.json
-# automatically for safety.
+# install.sh — Compatibility instructions for Claude Code hook install
 
 KB_HOOKS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 cat <<INSTRUCTIONS
 === Claude Code Session-End Hook Installation ===
 
-Claude Code supports "Stop" hooks that run when a session ends.
-To enable auto-saving session logs, add the following to your
-~/.claude/settings.json under the "hooks" key.
+推奨:
+  kb-mcp install hooks --claude
+  kb-mcp install hooks --claude --execute
+
+`kb-mcp` がまだ PATH に無い場合の手動設定例:
 
 1. Open ~/.claude/settings.json
-
-2. Add or merge into the "hooks" section:
 
 {
   "hooks": {
     "Stop": [
       {
-        "matcher": "",
         "hooks": [
           {
             "type": "command",
@@ -36,23 +31,8 @@ To enable auto-saving session logs, add the following to your
   }
 }
 
-3. Ensure the hook script is executable:
-
-   chmod +x ${KB_HOOKS_DIR}/on-session-end.sh
-
-4. Set environment variables in your shell profile or per-session:
-
-   export KB_CWD="\$PWD"        # working directory for project resolution
-   export KB_REPO="owner/repo"  # optional: explicit repo identifier
-
-   PROJECT is auto-resolved from KB_CWD via the project resolver.
-   You can also set PROJECT explicitly to override.
-
-   SUMMARY and CONTENT will typically be provided by the hook context
-   or can be set as defaults.
-
-NOTE: ai_tool is set to "claude" (vendor) and ai_client to "claude-code" (client).
-      The Stop hook runs when Claude Code finishes a conversation turn.
+この command は互換 shim `on-session-end.sh` を呼び、内部では `kb-mcp hook dispatch`
+へ転送される。Claude 側で `SUMMARY` / `CONTENT` が渡らない場合も default を維持する。
 
 Hooks directory: ${KB_HOOKS_DIR}
 INSTRUCTIONS

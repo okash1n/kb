@@ -1,26 +1,27 @@
 # hooks/
 
-AIセッション終了時にセッションログを自動保存するためのフック群。
+AI hook payload を `kb-mcp hook dispatch` へ流し込むための互換 shim / adapter 群。
 
 ## 目的
 
 AIツール（Claude Code, Copilot CLI, Codex CLI など）のセッション終了時に、
-セッションログを `notes/projects/{project}/session-log/` へ自動的に書き出す。
-
-MCP サーバーを経由せず、シェルスクリプトで直接ファイルを書き込む設計。
-これにより、MCP接続の有無やAIツールの種類に依存せず安定して動作する。
+session 終了や tool/error/compact 系イベントを durable event として取り込み、
+worker が session log / incident / checkpoint へ反映する。
 
 ## アーキテクチャ
 
 ```
-[Claude Code Stop]  → on-session-end.sh → kb_write_session_log()
-[Copilot sessionEnd] → copilot-adapter.sh → on-session-end.sh → kb_write_session_log()
-[Codex Stop]        → codex-adapter.sh  → on-session-end.sh → kb_write_session_log()
+[Claude/Copilot/Codex hook]
+  → adapter / on-session-end.sh
+  → kb-mcp hook dispatch
+  → SQLite event store / outbox
+  → kb-mcp worker run-once
+  → session_finalizer / incident_writer / checkpoint_writer
 ```
 
-- **on-session-end.sh**: 共通コア。環境変数/引数を受けてセッションログを書く
-- **adapters/**: 各ツール固有の hook context を共通コアの形式に変換
-- **lib/**: 共通関数（ULID生成、ファイル書き込み、project resolver）
+- **on-session-end.sh**: 旧 entry point を残す互換 shim。内部で `dispatch` を呼ぶ
+- **adapters/**: 各ツール固有 payload を shim の入力へ寄せる
+- **lib/**: project resolver などの最小補助
 
 ## ディレクトリ構造
 
@@ -43,20 +44,18 @@ hooks/
 
 ## インストール
 
-### Quick Install（手順表示）
-
 ```bash
-bash install/hooks.sh          # 全ツールの手順を表示
-bash install/hooks.sh claude   # Claude Code のみ
-bash install/hooks.sh copilot  # Copilot CLI のみ
-bash install/hooks.sh codex    # Codex CLI のみ
+kb-mcp install hooks --all
+kb-mcp install hooks --claude --execute
 ```
+
+`install/hooks.sh` は後方互換 wrapper として残しており、内部では `kb-mcp install hooks` を呼ぶ。
 
 ### ツール別
 
 #### Claude Code
 
-`~/.claude/settings.json` の Stop hooks にコマンドを追加。
+`~/.claude/settings.json` の Stop hooks に wrapper command を追加する。
 
 ```bash
 bash hooks/claude-code/install.sh
@@ -64,7 +63,7 @@ bash hooks/claude-code/install.sh
 
 #### Copilot CLI
 
-`.github/hooks/*.json` にセッション終了フックを設定。adapter が stdin JSON を解析。
+Copilot config の `hooks.session-end` に wrapper command を追加する。
 
 ```bash
 bash hooks/copilot-cli/install.sh
@@ -72,7 +71,7 @@ bash hooks/copilot-cli/install.sh
 
 #### Codex CLI (experimental)
 
-hooks.json で Stop イベントに adapter を登録。JSON stdin で cwd/transcript_path を受け取る。
+hooks 設定で Stop イベントに wrapper command を登録する。JSON stdin の schema は変わりうるため、現状は snippet 出力を標準とする。
 
 ```bash
 bash hooks/codex-cli/install.sh
@@ -80,17 +79,15 @@ bash hooks/codex-cli/install.sh
 
 > Codex CLI の hooks は experimental。安定するまでは skills + MCP を先に使うことを推奨。
 
-## 使い方（手動実行）
+## 使い方（手動実行 / 互換 shim）
 
 ```bash
-# project は自動解決
+# 旧 entry point をそのまま呼んでも内部では dispatch に転送される
 KB_CWD=/path/to/my-repo ./hooks/on-session-end.sh "Fixed auth bug" claude "session body"
 
-# project を明示指定
-./hooks/on-session-end.sh "Fixed auth bug" claude "session body" my-project claude-code github.com/owner/repo
-
-# 環境変数で指定
-SUMMARY="Fixed auth bug" AI_TOOL=claude AI_CLIENT=claude-code CONTENT="session body" KB_CWD=/path/to/repo ./hooks/on-session-end.sh
+# 直接 event pipeline に流す場合
+printf '{"session_id":"abc","summary":"Fixed auth bug","content":"session body"}' \
+  | kb-mcp hook dispatch --tool claude --client claude-code --layer client_hook --event session_ended --run-worker
 ```
 
 ### 引数の順序
@@ -116,8 +113,8 @@ on-session-end.sh <summary> <ai_tool> <content> [project] [ai_client] [repo]
 
 ## 設計方針
 
-- **直接ファイル書き込み**: MCP サーバーを経由しない。信頼性とAIツール非依存性を優先
-- **adapter パターン**: 共通コア + ツール固有adapter で hook context の差異を吸収
-- **project resolver**: Python 版が single source of truth。Shell 版は thin wrapper
+- **durable enqueue first**: hook 同期パスでは note 保存まで行わず、まず event store に入れる
+- **adapter パターン**: 共通 shim + ツール固有 adapter で payload 差分を吸収する
+- **project resolver**: Python 版が source of truth。shell は thin wrapper に留める
 - **ai_tool / ai_client 分離**: `ai_tool` はベンダー名、`ai_client` はクライアント名
-- **安全なインストール**: 設定ファイルの自動変更は行わず、手順を表示するのみ
+- **後方互換**: 既存 `on-session-end.sh` は残しつつ、内部実装だけ Python pipeline に移す
