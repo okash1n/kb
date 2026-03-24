@@ -1,29 +1,26 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# install.sh — Installation instructions for Copilot CLI session-end hook
-#
-# Copilot CLI supports hooks via .github/hooks/*.json files.
-# This script prints the instructions.
+# install.sh — Compatibility instructions for Copilot CLI hook install
 
 KB_HOOKS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 cat <<INSTRUCTIONS
 === Copilot CLI Session-End Hook Installation ===
 
-Copilot CLI supports hooks configured in .github/hooks/*.json files.
-To enable auto-saving session logs:
+推奨:
+  kb-mcp install hooks --copilot
+  kb-mcp install hooks --copilot --execute
 
-1. Create .github/hooks/ directory in your repository:
+`kb-mcp` がまだ PATH に無い場合の手動設定例:
 
-   mkdir -p .github/hooks
+1. Open ~/.copilot/config.json
 
-2. Create .github/hooks/session-end.json:
+2. Add:
 
    {
-     "version": 1,
      "hooks": {
-       "sessionEnd": [
+       "session-end": [
          {
            "bash": "${KB_HOOKS_DIR}/adapters/copilot-adapter.sh"
          }
@@ -31,16 +28,7 @@ To enable auto-saving session logs:
      }
    }
 
-   Note: Copilot CLI passes session context as JSON via stdin to the hook.
-   The adapter parses this payload and delegates to on-session-end.sh.
-
-3. Ensure the scripts are executable:
-
-   chmod +x "${KB_HOOKS_DIR}/adapters/copilot-adapter.sh"
-   chmod +x "${KB_HOOKS_DIR}/on-session-end.sh"
-
-The adapter sets AI_TOOL=copilot and AI_CLIENT=copilot-cli automatically.
-Project is auto-resolved from the working directory via the JSON payload.
+adapter は stdin JSON を読み、`on-session-end.sh` 経由で `dispatch` へ流す。
 
 Hooks directory: ${KB_HOOKS_DIR}
 INSTRUCTIONS
