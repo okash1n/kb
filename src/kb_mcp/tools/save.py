@@ -52,6 +52,7 @@ def _write_note(
     tags: list[str] | None = None,
     related: list[str] | None = None,
     status: str | None = None,
+    extra_fields: dict[str, str] | None = None,
 ) -> str:
     """Write a note file and return confirmation."""
     d = _ensure_project_dir(project, subdir)
@@ -66,10 +67,11 @@ def _write_note(
         tags=tags,
         related=related,
         status=status,
+        extra_fields=extra_fields,
     )
     filepath = d / filename
     filepath.write_text(f"{fm}\n\n{content}\n", encoding="utf-8")
-    rel = filepath.relative_to(kb_data_root())
+    rel = filepath.resolve().relative_to(kb_data_root().resolve())
     msg = f"Saved: {rel} (id: {ulid})"
     git_msg = vault_git_sync(filepath)
     if git_msg:
@@ -89,6 +91,7 @@ def kb_adr(
     tags: list[str] | None = None,
     related: list[str] | None = None,
     status: str = "accepted",
+    extra_fields: dict[str, str] | None = None,
 ) -> str:
     """Save an Architecture Decision Record.
 
@@ -111,6 +114,7 @@ def kb_adr(
         tags=tags,
         related=related,
         status=status,
+        extra_fields=extra_fields,
     )
 
 
@@ -125,6 +129,7 @@ def kb_gap(
     repo: str | None = None,
     tags: list[str] | None = None,
     related: list[str] | None = None,
+    extra_fields: dict[str, str] | None = None,
 ) -> str:
     """Save a gap record — what the user actually wanted vs what AI did.
 
@@ -146,6 +151,7 @@ def kb_gap(
         repo=repo_id,
         tags=tags,
         related=related,
+        extra_fields=extra_fields,
     )
 
 
@@ -160,6 +166,7 @@ def kb_knowledge(
     repo: str | None = None,
     tags: list[str] | None = None,
     related: list[str] | None = None,
+    extra_fields: dict[str, str] | None = None,
 ) -> str:
     """Save a knowledge note — something learned during development.
 
@@ -178,6 +185,7 @@ def kb_knowledge(
         repo=repo_id,
         tags=tags,
         related=related,
+        extra_fields=extra_fields,
     )
 
 
@@ -191,6 +199,7 @@ def kb_session(
     repo: str | None = None,
     tags: list[str] | None = None,
     related: list[str] | None = None,
+    extra_fields: dict[str, str] | None = None,
 ) -> str:
     """Save a session log — record of a working session.
 
@@ -210,11 +219,12 @@ def kb_session(
         repo=repo_id,
         tags=tags,
         related=related,
+        extra_fields=extra_fields,
     )
     filepath = d / filename
     filepath.write_text(f"{fm}\n\n{content}\n", encoding="utf-8")
     filepath.chmod(0o444)  # read-only — session logs are immutable
-    rel = filepath.relative_to(kb_data_root())
+    rel = filepath.resolve().relative_to(kb_data_root().resolve())
     msg = f"Saved: {rel} (id: {ulid})"
     git_msg = vault_git_sync(filepath)
     if git_msg:
@@ -233,6 +243,7 @@ def kb_draft(
     repo: str | None = None,
     tags: list[str] | None = None,
     related: list[str] | None = None,
+    extra_fields: dict[str, str] | None = None,
 ) -> str:
     """Save a draft — an idea, a want-to-do, or a casual memo.
 
@@ -257,10 +268,11 @@ def kb_draft(
         repo=repo_id,
         tags=tags,
         related=related,
+        extra_fields=extra_fields,
     )
     filepath = d / filename
     filepath.write_text(f"{fm}\n\n{content}\n", encoding="utf-8")
-    rel = filepath.relative_to(kb_data_root())
+    rel = filepath.resolve().relative_to(kb_data_root().resolve())
     msg = f"Saved: {rel} (id: {ulid})"
     git_msg = vault_git_sync(filepath)
     if git_msg:

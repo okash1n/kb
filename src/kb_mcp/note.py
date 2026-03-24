@@ -90,6 +90,7 @@ def build_frontmatter(
     tags: list[str] | None = None,
     related: list[str] | None = None,
     status: str | None = None,
+    extra_fields: dict[str, str] | None = None,
 ) -> str:
     """Build YAML frontmatter string."""
     now = now_local()
@@ -111,6 +112,9 @@ def build_frontmatter(
         lines.append(f"related: [{rel_str}]")
     if status:
         lines.append(f"status: {status}")
+    if extra_fields:
+        for key, value in extra_fields.items():
+            lines.append(f"{key}: {value}")
     lines.extend([
         f"created: {now}",
         f"updated: {now}",
