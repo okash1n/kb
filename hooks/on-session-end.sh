@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# on-session-end.sh — Generic session-end hook for kb
+# on-session-end.sh — Legacy-compatible session-end hook shim
 #
-# Saves a session log when an AI session ends.
-# Can be invoked directly or called by AI-tool-specific hooks.
-#
-# Project is auto-resolved via kb_resolve_project if not explicitly provided.
+# Existing hook installations may still call this script directly.
+# It now forwards payloads to `kb-mcp hook dispatch` so the Python event
+# pipeline is the source of truth while keeping the old entry point alive.
 #
 # Arguments (positional) or environment variables:
 #   SUMMARY    — one-line session summary (required)
@@ -22,7 +21,6 @@ set -euo pipefail
 #   chmod +x hooks/on-session-end.sh
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${SCRIPT_DIR}/lib/kb-utils.sh"
 source "${SCRIPT_DIR}/lib/kb-resolver.sh"
 
 # Accept positional args or fall back to environment variables
@@ -50,11 +48,56 @@ if [[ -z "${project}" ]]; then
   fi
 fi
 
-if [[ -z "${project}" ]]; then
-  echo "Error: Could not resolve project. Set PROJECT or KB_CWD/KB_REPO." >&2
-  exit 1
+case "${ai_tool}" in
+  claude)
+    client="${ai_client:-claude-code}"
+    ;;
+  copilot)
+    client="${ai_client:-copilot-cli}"
+    ;;
+  codex)
+    client="${ai_client:-codex-cli}"
+    ;;
+  *)
+    client="${ai_client:-${ai_tool}-hook}"
+    ;;
+esac
+kb_cmd="${KB_MCP_BIN:-kb-mcp}"
+export SUMMARY="${summary}"
+export CONTENT="${content}"
+export PROJECT="${project}"
+export REPO="${repo}"
+RAW_INPUT=""
+if [[ ! -t 0 ]]; then
+  RAW_INPUT="$(cat)"
 fi
+export RAW_INPUT
 
-filepath="$(kb_write_session_log "${project}" "${summary}" "${ai_tool}" "${content}" "${ai_client}" "${repo}")"
+payload="$(python3 - <<'PY'
+import json
+import os
 
-echo "Session log saved: ${filepath}" >&2
+payload = {}
+raw = os.environ.get("RAW_INPUT", "").strip()
+if raw:
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        payload = {"content": raw}
+payload.setdefault("summary", os.environ["SUMMARY"])
+payload.setdefault("content", os.environ["CONTENT"])
+payload.setdefault("project", os.environ.get("PROJECT") or None)
+payload.setdefault("repo", os.environ.get("REPO") or None)
+payload.setdefault("session_id", os.environ.get("KB_VENDOR_SESSION_ID") or None)
+payload.setdefault("correlation_id", os.environ.get("KB_SESSION_CORRELATION_ID") or None)
+payload.setdefault("cwd", os.environ.get("KB_CWD") or os.getcwd())
+print(json.dumps(payload, ensure_ascii=False))
+PY
+)"
+
+printf '%s' "${payload}" | "${kb_cmd}" hook dispatch \
+  --tool "${ai_tool}" \
+  --client "${client}" \
+  --layer client_hook \
+  --event session_ended \
+  --run-worker
