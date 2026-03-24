@@ -7,6 +7,12 @@
 
 ## [Unreleased]
 
+### Changed
+
+- まだ未整理
+
+## [0.4.0] - 2026-03-25
+
 ### Added
 
 - SQLite ベースの hook event pipeline と `kb-mcp hook dispatch` / `kb-mcp worker run-once` / `kb-mcp session run`
