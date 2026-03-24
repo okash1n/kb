@@ -1,6 +1,7 @@
 """kb-mcp CLI — setup, serve, config get, and more."""
 
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -328,23 +329,19 @@ def _resolve_hooks_targets(args: argparse.Namespace) -> list[str]:
 
 def cmd_install_hooks(args: argparse.Namespace) -> None:
     """Install hooks for specified AI tool(s)."""
-    kb_mcp_path = shutil.which("kb-mcp")
-    if not kb_mcp_path:
-        print("ERROR: kb-mcp not found in PATH", file=sys.stderr)
-        sys.exit(1)
-
-    hooks_dir = _hooks_lib_dir()
-    hooks_dir.mkdir(parents=True, exist_ok=True)
+    from kb_mcp.events.scheduler import install_scheduler_marker
+    from kb_mcp.install_hooks import install_claude, install_codex, install_copilot
 
     tools = _resolve_hooks_targets(args)
-
     for tool in tools:
         if tool == "copilot":
-            _install_copilot_hook(kb_mcp_path, hooks_dir)
+            print(install_copilot(execute=args.execute))
         elif tool == "claude":
-            _install_claude_hook(kb_mcp_path, hooks_dir)
+            print(install_claude(execute=args.execute))
         elif tool == "codex":
-            _install_codex_hook(kb_mcp_path, hooks_dir)
+            print(install_codex(execute=args.execute))
+    if args.execute:
+        install_scheduler_marker()
 
 
 def _write_wrapper_script(hooks_dir: Path, name: str, kb_mcp_path: str, tool: str, client: str) -> Path:
@@ -425,140 +422,146 @@ def _install_codex_hook(kb_mcp_path: str, hooks_dir: Path) -> None:
 
 def cmd_hook_session_end(args: argparse.Namespace) -> None:
     """Handle session-end hook invocation."""
-    tool = args.tool
-    client = args.client
+    dispatch_args = argparse.Namespace(
+        tool=args.tool,
+        client=args.client,
+        layer="client_hook",
+        event="session_ended",
+        payload_file=None,
+        run_worker=True,
+    )
+    cmd_hook_dispatch(dispatch_args)
 
-    # Read stdin if available (some tools pass JSON payload)
+
+def _read_stdin_payload() -> dict:
+    """Read JSON payload from stdin when available."""
     import select
-    payload = {}
-    if select.select([sys.stdin], [], [], 0.0)[0]:
-        import json
-        try:
-            payload = json.loads(sys.stdin.read())
-        except (json.JSONDecodeError, OSError):
-            pass
 
-    cwd = payload.get("cwd", os.getcwd())
-    summary = payload.get("summary", payload.get("last_assistant_message", "Session ended"))
-    content = payload.get("content", "")
+    if not select.select([sys.stdin], [], [], 0.0)[0]:
+        return {}
+    raw = sys.stdin.read()
+    if not raw.strip():
+        return {}
+    import json
 
-    # If no content, try to build from transcript
-    transcript_path = payload.get("transcript_path")
-    if not content and transcript_path:
-        tp = Path(transcript_path)
-        if tp.exists():
-            lines = tp.read_text(encoding="utf-8").splitlines()
-            content = "\n".join(lines[-100:])
-
-    if not content:
-        content = f"Session ended. Tool: {tool}, Client: {client}"
-
-    # Save session log via MCP tool
-    from kb_mcp.tools.save import kb_session
     try:
-        result = kb_session(
-            summary=summary[:200],
-            content=content,
-            ai_tool=tool,
-            ai_client=client,
-            cwd=cwd,
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return {"content": raw}
+
+
+def cmd_hook_dispatch(args: argparse.Namespace) -> None:
+    """Normalize, persist, and optionally drain a hook event."""
+    from kb_mcp.events.adapters import (
+        normalize_claude_payload,
+        normalize_codex_payload,
+        normalize_copilot_payload,
+    )
+    from kb_mcp.events.emergency_spool import spool_event
+    from kb_mcp.events.normalize import normalize_event
+    from kb_mcp.events.store import EventStore
+    from kb_mcp.events.worker import run_once
+
+    payload = _read_stdin_payload()
+    if args.payload_file:
+        payload.update(json.loads(Path(args.payload_file).read_text(encoding="utf-8")))
+    payload.setdefault("cwd", os.getcwd())
+
+    if args.tool == "claude":
+        payload = normalize_claude_payload(payload)
+    elif args.tool == "codex":
+        payload = normalize_codex_payload(payload)
+    elif args.tool == "copilot":
+        payload = normalize_copilot_payload(payload)
+
+    try:
+        envelope = normalize_event(
+            tool=args.tool,
+            client=args.client,
+            layer=args.layer,
+            event=args.event,
+            payload=payload,
         )
-        print(result)
-    except Exception as e:
-        print(f"Warning: failed to save session log: {e}", file=sys.stderr)
+        result = EventStore().append(envelope)
+    except Exception as exc:
+        if "envelope" in locals():
+            spool_event(envelope)
+        print(f"dispatch failed: {exc}", file=sys.stderr)
+        raise
+
+    if getattr(args, "run_worker", False):
+        worker_result = run_once(maintenance=args.event == "session_ended")
+        exit_code = 0 if worker_result["failed"] == 0 else 2
+        print(
+            json.dumps(
+                {
+                    "event_id": result.event_id,
+                    "logical_key": result.logical_key,
+                    "status": result.status,
+                    "aggregate_version": result.aggregate_version,
+                    "queued_sinks": result.queued_sinks,
+                    "worker": worker_result,
+                },
+                ensure_ascii=False,
+            )
+        )
+        if exit_code:
+            raise SystemExit(exit_code)
+        return
+
+    print(
+        json.dumps(
+            {
+                "event_id": result.event_id,
+                "logical_key": result.logical_key,
+                "status": result.status,
+                "aggregate_version": result.aggregate_version,
+                "queued_sinks": result.queued_sinks,
+            },
+            ensure_ascii=False,
+        )
+    )
+
+
+def cmd_worker(args: argparse.Namespace) -> None:
+    """Run worker maintenance or drain once."""
+    from kb_mcp.events.worker import run_once
+
+    if args.worker_command == "run-once":
+        result = run_once(maintenance=args.maintenance)
+        print(json.dumps(result, ensure_ascii=False))
+        return
+    if args.worker_command == "drain":
+        result = run_once(maintenance=True, limit=args.limit)
+        print(json.dumps(result, ensure_ascii=False))
+        return
+    raise ValueError(f"Unknown worker command: {args.worker_command}")
+
+
+def cmd_session_run(args: argparse.Namespace) -> None:
+    """Launch a managed session command."""
+    from kb_mcp.events.session_launcher import launch_session
+
+    command_args = list(args.command_args)
+    if command_args and command_args[0] == "--":
+        command_args = command_args[1:]
+    if not command_args:
+        print("ERROR: specify a command after --", file=sys.stderr)
+        sys.exit(1)
+    exit_code = launch_session(
+        tool=args.tool,
+        client=args.client,
+        command=command_args,
+        cwd=args.cwd,
+    )
+    raise SystemExit(exit_code)
 
 
 def cmd_doctor(args: argparse.Namespace) -> None:
     """Diagnose installation state."""
-    import platform as plat
+    from kb_mcp.doctor import run_doctor
 
-    repo = None  # reserved for future use
-
-    # kb-mcp command + version
-    kb_cmd = shutil.which("kb-mcp")
-    try:
-        from kb_mcp.update import current_version
-        ver = current_version()
-    except Exception:
-        ver = None
-    ver_label = f"v{ver}" if ver else "dev"
-    _print_check("kb-mcp command", f"{kb_cmd} ({ver_label})" if kb_cmd else "not found", bool(kb_cmd))
-
-    # Version check
-    if not getattr(args, "no_version_check", False) and ver:
-        try:
-            from kb_mcp.update import latest_version, is_outdated
-            latest, err = latest_version(timeout=2)
-            if err:
-                print(f"  version check: skipped ({err})")
-            elif latest:
-                outdated = is_outdated(ver, latest)
-                if outdated:
-                    print(f"  → v{latest} available. Run: uv tool upgrade kb-mcp")
-                elif outdated is False:
-                    print(f"  version: up to date")
-                else:
-                    print(f"  version: {latest} available (comparison failed)")
-        except Exception as e:
-            print(f"  version check: skipped ({e})")
-    elif not ver:
-        print(f"  version check: skipped (dev install, no package metadata)")
-    else:
-        print(f"  version check: skipped (--no-version-check)")
-
-    # Config
-    cfg_path = config_dir() / "config.yml"
-    _print_check("Config", str(cfg_path), cfg_path.exists())
-
-    # Vault & data root
-    config = load_config()
-    vault_path = config.get("vault_path", "")
-    if vault_path:
-        vp = Path(vault_path).expanduser()
-        _print_check("Vault", str(vp), vp.exists())
-        kb_root = config.get("kb_root", "")
-        data_root = vp / kb_root if kb_root else vp
-        _print_check("kb data root", str(data_root), data_root.exists())
-    else:
-        _print_check("Vault", "not configured", False)
-
-    # Obsidian CLI
-    from kb_mcp.obsidian import _detect_obsidian_cli
-    obs_cli = _detect_obsidian_cli()
-    _print_check("Obsidian CLI", obs_cli or "not found (degraded mode)", bool(obs_cli))
-
-    # Per-tool status
-    print()
-    for tool, label in [("claude", "Claude Code"), ("copilot", "Copilot"), ("codex", "Codex")]:
-        print(f"  {label}:")
-
-        # MCP registration
-        mcp_ok, mcp_detail = _check_mcp_registered(tool, repo=repo)
-        _print_check("    MCP server", mcp_detail, mcp_ok, indent=4)
-
-        # Hooks
-        if tool == "copilot":
-            import json as _json
-            copilot_config = _copilot_home() / "config.json"
-            hook_ok = False
-            wrapper_path = "n/a"
-            if copilot_config.exists():
-                try:
-                    data = _json.loads(copilot_config.read_text(encoding="utf-8"))
-                    hooks = data.get("hooks", {}).get("session-end", [])
-                    wrapper_path = hooks[0].get("bash", "") if hooks else ""
-                    hook_ok = bool(wrapper_path) and Path(wrapper_path).exists()
-                except (KeyError, IndexError, _json.JSONDecodeError, OSError, ValueError):
-                    wrapper_path = "invalid config"
-            _print_check("    Hooks", wrapper_path or "not configured", hook_ok, indent=4)
-        else:
-            wrapper = _hooks_lib_dir() / f"{tool}-session-end.sh"
-            _print_check("    Hooks", str(wrapper), wrapper.exists(), indent=4)
-
-        # Windows hooks warning
-        if plat.system() == "Windows":
-            print("    (hooks are Unix/macOS only in this version)")
-        print()
+    print(run_doctor(no_version_check=args.no_version_check))
 
 
 def _check_mcp_registered(tool: str, repo: str | None = None) -> tuple[bool, str]:
@@ -679,6 +682,7 @@ def build_parser() -> argparse.ArgumentParser:
     hooks_parser.add_argument("--copilot", action="store_true")
     hooks_parser.add_argument("--codex", action="store_true")
     hooks_parser.add_argument("--all", action="store_true", help="All tools")
+    hooks_parser.add_argument("--execute", action="store_true", help="Write config files where supported")
 
     # hook (execution entry point)
     hook_parser = sub.add_parser("hook", help="Hook execution commands")
@@ -686,6 +690,30 @@ def build_parser() -> argparse.ArgumentParser:
     session_end_parser = hook_sub.add_parser("session-end", help="Session end hook")
     session_end_parser.add_argument("--tool", required=True, choices=["claude", "copilot", "codex"])
     session_end_parser.add_argument("--client", required=True)
+    dispatch_parser = hook_sub.add_parser("dispatch", help="Durable hook dispatch")
+    dispatch_parser.add_argument("--tool", required=True, choices=["claude", "copilot", "codex", "kb"])
+    dispatch_parser.add_argument("--client", required=True)
+    dispatch_parser.add_argument("--layer", required=True, choices=["client_hook", "session_launcher", "server_middleware"])
+    dispatch_parser.add_argument("--event", required=True)
+    dispatch_parser.add_argument("--payload-file")
+    dispatch_parser.add_argument("--run-worker", action="store_true", help="Drain worker after dispatch")
+
+    # worker
+    worker_parser = sub.add_parser("worker", help="Event worker commands")
+    worker_sub = worker_parser.add_subparsers(dest="worker_command")
+    run_once_parser = worker_sub.add_parser("run-once", help="Drain due sinks once")
+    run_once_parser.add_argument("--maintenance", action="store_true", help="Promote pending finalization before drain")
+    drain_parser = worker_sub.add_parser("drain", help="Maintenance drain")
+    drain_parser.add_argument("--limit", type=int, default=50)
+
+    # session run
+    session_parser = sub.add_parser("session", help="Managed session commands")
+    session_sub = session_parser.add_subparsers(dest="session_command")
+    session_run_parser = session_sub.add_parser("run", help="Launch a managed session")
+    session_run_parser.add_argument("--tool", required=True, choices=["claude", "copilot", "codex"])
+    session_run_parser.add_argument("--client", required=True)
+    session_run_parser.add_argument("--cwd")
+    session_run_parser.add_argument("command_args", nargs=argparse.REMAINDER)
 
     # doctor
     doctor_parser = sub.add_parser("doctor", help="Diagnose installation state")
@@ -716,8 +744,17 @@ def main() -> None:
     elif args.command == "hook":
         if args.hook_command == "session-end":
             cmd_hook_session_end(args)
+        elif args.hook_command == "dispatch":
+            cmd_hook_dispatch(args)
         else:
             parser.parse_args(["hook", "--help"])
+    elif args.command == "worker":
+        cmd_worker(args)
+    elif args.command == "session":
+        if args.session_command == "run":
+            cmd_session_run(args)
+        else:
+            parser.parse_args(["session", "--help"])
     elif args.command == "doctor":
         cmd_doctor(args)
     else:
