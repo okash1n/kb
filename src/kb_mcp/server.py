@@ -1,7 +1,8 @@
 """kb MCP server."""
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import Context, FastMCP
 
+from kb_mcp.events.middleware import with_tool_events
 from kb_mcp.tools.init import kb_init
 from kb_mcp.tools.save import kb_adr, kb_draft, kb_gap, kb_knowledge, kb_session
 from kb_mcp.tools.search import kb_search, kb_read
@@ -11,6 +12,18 @@ from kb_mcp.tools.graduate import kb_graduate
 
 mcp = FastMCP("kb")
 
+_init = with_tool_events("kb", "kb-mcp", "init", kb_init)
+_adr = with_tool_events("kb", "kb-mcp", "adr", kb_adr)
+_gap = with_tool_events("kb", "kb-mcp", "gap", kb_gap)
+_knowledge = with_tool_events("kb", "kb-mcp", "knowledge", kb_knowledge)
+_session = with_tool_events("kb", "kb-mcp", "session", kb_session)
+_draft = with_tool_events("kb", "kb-mcp", "draft", kb_draft)
+_search = with_tool_events("kb", "kb-mcp", "search", kb_search)
+_read = with_tool_events("kb", "kb-mcp", "read", kb_read)
+_lint = with_tool_events("kb", "kb-mcp", "lint", kb_lint)
+_organize = with_tool_events("kb", "kb-mcp", "organize", kb_organize)
+_graduate = with_tool_events("kb", "kb-mcp", "graduate", kb_graduate)
+
 # --- Init ---
 
 @mcp.tool()
@@ -18,6 +31,7 @@ def init(
     project: str,
     cwd: str | None = None,
     repo: str | None = None,
+    ctx: Context | None = None,
 ) -> str:
     """Initialize a new project in the kb store (NOT in the current repository).
 
@@ -34,7 +48,7 @@ def init(
         cwd: Working directory — used ONLY to detect git remote for .kb-project.yml association, NOT as a save destination
         repo: Explicit repo identifier (e.g. github.com/owner/repo) — used for .kb-project.yml association
     """
-    return kb_init(project=project, cwd=cwd, repo=repo)
+    return _init(project=project, cwd=cwd, repo=repo, ctx=ctx)
 
 
 # --- Save tools ---
@@ -52,6 +66,7 @@ def adr(
     tags: list[str] | None = None,
     related: list[str] | None = None,
     status: str = "accepted",
+    ctx: Context | None = None,
 ) -> str:
     """Save an Architecture Decision Record (ADR).
 
@@ -65,11 +80,12 @@ def adr(
     Project is auto-resolved from cwd/repo if not specified.
     cwd/repo are used only for project resolution, not as save destinations.
     """
-    return kb_adr(
+    return _adr(
         slug=slug, summary=summary, content=content,
         ai_tool=ai_tool, ai_client=ai_client,
         project=project, cwd=cwd, repo=repo,
         tags=tags, related=related, status=status,
+        ctx=ctx,
     )
 
 
@@ -85,6 +101,7 @@ def gap(
     repo: str | None = None,
     tags: list[str] | None = None,
     related: list[str] | None = None,
+    ctx: Context | None = None,
 ) -> str:
     """Save a gap record — what the user actually wanted vs what AI did.
 
@@ -98,11 +115,12 @@ def gap(
     Project is auto-resolved from cwd/repo if not specified.
     cwd/repo are used only for project resolution, not as save destinations.
     """
-    return kb_gap(
+    return _gap(
         slug=slug, summary=summary, content=content,
         ai_tool=ai_tool, ai_client=ai_client,
         project=project, cwd=cwd, repo=repo,
         tags=tags, related=related,
+        ctx=ctx,
     )
 
 
@@ -118,6 +136,7 @@ def knowledge(
     repo: str | None = None,
     tags: list[str] | None = None,
     related: list[str] | None = None,
+    ctx: Context | None = None,
 ) -> str:
     """Save a knowledge note — something learned during development.
 
@@ -129,11 +148,12 @@ def knowledge(
     Project is auto-resolved from cwd/repo if not specified.
     cwd/repo are used only for project resolution, not as save destinations.
     """
-    return kb_knowledge(
+    return _knowledge(
         slug=slug, summary=summary, content=content,
         ai_tool=ai_tool, ai_client=ai_client,
         project=project, cwd=cwd, repo=repo,
         tags=tags, related=related,
+        ctx=ctx,
     )
 
 
@@ -148,6 +168,7 @@ def session(
     repo: str | None = None,
     tags: list[str] | None = None,
     related: list[str] | None = None,
+    ctx: Context | None = None,
 ) -> str:
     """Save a session log — record of a working session.
 
@@ -159,11 +180,12 @@ def session(
     Project is auto-resolved from cwd/repo if not specified.
     cwd/repo are used only for project resolution, not as save destinations.
     """
-    return kb_session(
+    return _session(
         summary=summary, content=content,
         ai_tool=ai_tool, ai_client=ai_client,
         project=project, cwd=cwd, repo=repo,
         tags=tags, related=related,
+        ctx=ctx,
     )
 
 
@@ -179,6 +201,7 @@ def draft(
     repo: str | None = None,
     tags: list[str] | None = None,
     related: list[str] | None = None,
+    ctx: Context | None = None,
 ) -> str:
     """Save a draft — an idea, a want-to-do, or a casual memo.
 
@@ -190,11 +213,12 @@ def draft(
     Project is auto-resolved from cwd/repo if not specified.
     cwd/repo are used only for project resolution, not as save destinations.
     """
-    return kb_draft(
+    return _draft(
         slug=slug, summary=summary, content=content,
         ai_tool=ai_tool, ai_client=ai_client,
         project=project, cwd=cwd, repo=repo,
         tags=tags, related=related,
+        ctx=ctx,
     )
 
 
@@ -207,6 +231,7 @@ async def search(
     tags: list[str] | None = None,
     note_type: str | None = None,
     limit: int = 20,
+    ctx: Context | None = None,
 ) -> str:
     """Search kb notes by text with optional filters.
 
@@ -217,31 +242,32 @@ async def search(
         note_type: Filter by type: adr, gap, knowledge, session-log
         limit: Max results (default 20)
     """
-    return await kb_search(
+    return await _search(
         query=query, project=project, tags=tags, note_type=note_type, limit=limit,
+        ctx=ctx,
     )
 
 
 @mcp.tool()
-async def read(id: str) -> str:
+async def read(id: str, ctx: Context | None = None) -> str:
     """Read a note by its ULID."""
-    return await kb_read(id=id)
+    return await _read(id=id, ctx=ctx)
 
 
 # --- Maintenance tools ---
 
 @mcp.tool()
-def lint(project: str | None = None) -> str:
+def lint(project: str | None = None, ctx: Context | None = None) -> str:
     """Check notes for rule compliance.
 
     Validates frontmatter fields, ULID format, timestamps,
     ai_tool values, filename conventions, and .kb-project.yml presence.
     """
-    return kb_lint(project=project)
+    return _lint(project=project, ctx=ctx)
 
 
 @mcp.tool()
-async def organize(project: str | None = None) -> str:
+async def organize(project: str | None = None, ctx: Context | None = None) -> str:
     """Discover and suggest missing links between notes.
 
     Finds orphan notes (no incoming links), dead-end notes (no outgoing links),
@@ -249,11 +275,11 @@ async def organize(project: str | None = None) -> str:
 
     Optionally filter by project name.
     """
-    return await kb_organize(project=project)
+    return await _organize(project=project, ctx=ctx)
 
 
 @mcp.tool()
-def graduate() -> str:
+def graduate(ctx: Context | None = None) -> str:
     """Propose promoting project notes to general/.
 
     Scans knowledge/ and gap/ across all projects to find:
@@ -262,7 +288,7 @@ def graduate() -> str:
 
     Returns proposals only — does not perform writes.
     """
-    return kb_graduate()
+    return _graduate(ctx=ctx)
 
 
 # --- Update tools ---
