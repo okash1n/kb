@@ -73,7 +73,8 @@ args = ["serve"]
 ### 4. Hooks インストール（オプション）
 
 ```bash
-kb-mcp install hooks --all                 # 全ツールにフック配置
+kb-mcp install hooks --all                 # 全ツールの hook snippet / wrapper を用意
+kb-mcp install hooks --claude --execute    # 可能なものは設定ファイルまで反映
 ```
 
 ### 5. 動作確認
@@ -123,8 +124,22 @@ kb-mcp doctor
 | `kb-mcp setup` | 初期設定（Vault パス、タイムゾーン） |
 | `kb-mcp serve` | MCP サーバー起動 |
 | `kb-mcp config get <key>` | 設定値取得 |
-| `kb-mcp install hooks` | フック配置 |
-| `kb-mcp doctor` | 環境診断 |
+| `kb-mcp install hooks` | lifecycle hook の wrapper / snippet 生成 |
+| `kb-mcp hook dispatch` | raw hook payload を durable event として取り込む |
+| `kb-mcp worker run-once` | due な sink を 1 回 drain する |
+| `kb-mcp session run` | launcher 管理下で AI セッションを起動する |
+| `kb-mcp doctor` | config, event DB, scheduler, hooks を診断する |
+
+## Hooks / Events
+
+hook は直接ノートを書き込むのではなく、`kb-mcp hook dispatch` で event pipeline に入る。
+
+流れ:
+1. client hook / launcher / middleware が raw event を送る
+2. `dispatch` が normalize + redact + SQLite 永続化を行う
+3. worker が session finalizer / incident writer / checkpoint writer を処理する
+
+旧 `hooks/on-session-end.sh` は互換 shim として残しており、内部では `dispatch` を呼ぶ。
 
 ## ファイル命名
 
@@ -151,3 +166,7 @@ updated: YYYY-MM-DDTHH:MM+09:00
 ## ライセンス
 
 MIT
+
+## 変更履歴
+
+[CHANGELOG.md](CHANGELOG.md) を参照。
