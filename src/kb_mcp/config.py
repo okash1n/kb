@@ -16,6 +16,21 @@ def config_dir() -> Path:
     return Path(xdg) / "kb"
 
 
+def runtime_dir() -> Path:
+    """Return kb runtime directory path."""
+    return config_dir() / "runtime"
+
+
+def runtime_events_dir() -> Path:
+    """Return runtime directory for event pipeline state."""
+    return runtime_dir() / "events"
+
+
+def runtime_events_db_path() -> Path:
+    """Return SQLite path for event pipeline state."""
+    return runtime_events_dir() / "events.sqlite3"
+
+
 @lru_cache(maxsize=1)
 def load_config() -> dict:
     """Load config from config.yml. Returns empty dict if not configured."""
