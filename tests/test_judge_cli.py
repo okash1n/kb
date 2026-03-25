@@ -121,11 +121,16 @@ class JudgeCliTest(unittest.TestCase):
         self.assertEqual(result["backend_kind"], "_StubBackend")
         with schema_locked_connection() as conn:
             judge_row = conn.execute("SELECT status, model_hint FROM judge_runs").fetchone()
-            candidate_row = conn.execute("SELECT label, status FROM promotion_candidates").fetchone()
+            candidate_row = conn.execute("SELECT label, status, payload_json FROM promotion_candidates").fetchone()
         self.assertEqual(judge_row["status"], "judged")
         self.assertEqual(judge_row["model_hint"], "codex-cli")
         self.assertEqual(candidate_row["label"], "adr")
         self.assertEqual(candidate_row["status"], "pending_review")
+        payload = json.loads(candidate_row["payload_json"])
+        self.assertEqual(payload["semantics"]["memory_class"], "adr")
+        self.assertEqual(payload["semantics"]["update_target"], "decision_policy")
+        self.assertEqual(payload["semantics"]["scope"], "project_local")
+        self.assertEqual(payload["semantics"]["force"], "hint")
 
     def test_review_candidates_skips_existing_judged_window_without_force(self) -> None:
         self._append_checkpoint_sequence(
@@ -164,10 +169,13 @@ class JudgeCliTest(unittest.TestCase):
         self.assertGreaterEqual(result["upserted_candidates"], 1)
         with schema_locked_connection() as conn:
             row = conn.execute(
-                "SELECT label, status FROM promotion_candidates WHERE label='session_thin'"
+                "SELECT label, status, payload_json FROM promotion_candidates WHERE label='session_thin'"
             ).fetchone()
         self.assertIsNotNone(row)
         self.assertEqual(row["status"], "pending_review")
+        payload = json.loads(row["payload_json"])
+        self.assertEqual(payload["semantics"]["scope"], "session_local")
+        self.assertEqual(payload["semantics"]["update_target"], "session_summary_only")
 
     def test_review_candidates_continues_after_one_window_failure(self) -> None:
         self._append_checkpoint_sequence(

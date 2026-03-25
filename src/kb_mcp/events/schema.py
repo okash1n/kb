@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from kb_mcp.config import runtime_events_db_path, runtime_events_dir
+from kb_mcp.events.learning_contract import default_backfilled_asset_fields
 
 SCHEMA_VERSION = 5
 
@@ -368,7 +369,11 @@ def _backfill_learning_assets(conn: sqlite3.Connection) -> None:
     ).fetchall()
     for row in rows:
         memory_class = str(row["human_label"] or row["candidate_label"])
-        scope = "project_local"
+        fields = default_backfilled_asset_fields(
+            memory_class=memory_class,
+            source_status=str(row["candidate_status"]),
+        )
+        scope = str(fields["scope"])
         asset_key = _learning_asset_key(
             candidate_key=str(row["candidate_key"]),
             review_seq=int(row["review_seq"]),
@@ -376,9 +381,6 @@ def _backfill_learning_assets(conn: sqlite3.Connection) -> None:
             scope=scope,
         )
         source_status = str(row["candidate_status"])
-        lifecycle = "active" if source_status == "materialized" else "candidate"
-        confidence = "stable" if source_status == "materialized" else "reviewed"
-        visibility = "active" if source_status == "materialized" else "candidate"
         created_at = (
             row["materialization_created_at"]
             or row["reviewed_at"]
@@ -417,12 +419,12 @@ def _backfill_learning_assets(conn: sqlite3.Connection) -> None:
                 row["materialization_key"],
                 row["note_id"],
                 row["note_path"],
-                memory_class,
-                _default_update_target(memory_class),
+                str(fields["memory_class"]),
+                str(fields["update_target"]),
                 scope,
-                "hint",
-                confidence,
-                lifecycle,
+                str(fields["force"]),
+                str(fields["confidence"]),
+                str(fields["lifecycle"]),
                 _json_dumps(
                     {
                         "candidate_key": row["candidate_key"],
@@ -444,7 +446,7 @@ def _backfill_learning_assets(conn: sqlite3.Connection) -> None:
                         "rollback_scope": scope,
                     }
                 ),
-                visibility,
+                str(fields["learning_state_visibility"]),
                 source_status,
                 created_at,
                 updated_at,
@@ -454,16 +456,6 @@ def _backfill_learning_assets(conn: sqlite3.Connection) -> None:
 
 def _learning_asset_key(*, candidate_key: str, review_seq: int, memory_class: str, scope: str) -> str:
     return f"learning:{candidate_key}:{review_seq}:{memory_class}:{scope}"
-
-
-def _default_update_target(memory_class: str) -> str:
-    mapping = {
-        "gap": "behavior_style",
-        "knowledge": "fact_model",
-        "adr": "decision_policy",
-        "session_thin": "session_summary_only",
-    }
-    return mapping.get(memory_class, "behavior_style")
 
 
 def _json_dumps(value: dict[str, object]) -> str:
