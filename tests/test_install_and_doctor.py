@@ -309,6 +309,58 @@ class InstallAndDoctorTest(unittest.TestCase):
         self.assertIn("Materializations failed: 1 ✗", report)
         self.assertIn("Materializations applying expired: 1 ✗", report)
 
+    def test_doctor_reports_learning_runtime_counts(self) -> None:
+        store = EventStore()
+        store.upsert_learning_asset(
+            asset_key="asset-active",
+            candidate_key=None,
+            review_id=None,
+            materialization_key=None,
+            note_id=None,
+            note_path=None,
+            memory_class="gap",
+            update_target="behavior_style",
+            scope="project_local",
+            force="preferred",
+            confidence="reviewed",
+            lifecycle="active",
+            provenance={"project": "demo"},
+            traceability={},
+            revocation_path={},
+            learning_state_visibility="active",
+            source_status="materialized",
+        )
+        store.create_learning_packet(
+            packet_id="packet-1",
+            source_tool="kb",
+            source_client="kb-mcp",
+            tool_name="gap",
+            session_id="session-1",
+            project="demo",
+            repo=None,
+            cwd=None,
+            asset_keys=["asset-active"],
+        )
+        store.record_learning_application(
+            application_id="application-1",
+            packet_id="packet-1",
+            tool_name="gap",
+            tool_call_id="call-1",
+            source_tool="kb",
+            source_client="kb-mcp",
+            session_id="session-1",
+            save_request_id=None,
+            saved_note_id=None,
+            saved_note_path=None,
+        )
+
+        report = run_doctor(no_version_check=True)
+
+        self.assertIn("Learning assets: 1", report)
+        self.assertIn("Learning packets: 1", report)
+        self.assertIn("Learning applications: 1", report)
+        self.assertIn("Learning active assets: 1", report)
+
     @mock.patch("kb_mcp.doctor.EventStore")
     def test_doctor_handles_judge_metric_query_failure(self, store_cls: mock.Mock) -> None:
         db_path = runtime_events_db_path()
