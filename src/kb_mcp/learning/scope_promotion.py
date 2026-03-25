@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import json
+from typing import TYPE_CHECKING
 
-from kb_mcp.events.store import EventStore
 from kb_mcp.learning.distribution import scope_distribution_metadata
+
+if TYPE_CHECKING:
+    from kb_mcp.events.store import EventStore
 
 
 def promote_learning_scopes(*, store: EventStore | None = None) -> dict[str, object]:
+    from kb_mcp.events.store import EventStore
+
     active_store = store or EventStore()
     rows = active_store.list_learning_assets()
     grouped: dict[tuple[str, str], list[object]] = {}
@@ -77,6 +82,8 @@ def promote_learning_scopes(*, store: EventStore | None = None) -> dict[str, obj
             )
             promoted.append({"asset_key": general_asset_key, "scope": "general"})
     return {"promoted": len(promoted), "results": promoted}
+
+
 def _traceability(
     metadata: dict[str, object],
     assets: list[object],

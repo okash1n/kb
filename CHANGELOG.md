@@ -7,6 +7,13 @@
 
 ## [Unreleased]
 
+## [0.17.1] - 2026-03-26
+
+### Fixed
+
+- `kb_mcp.learning.scope_promotion` の `EventStore` import を遅延化し、`kb_mcp.events.store` との循環 import で hook dispatch が落ちる問題を修正した
+- import graph の回帰テストを追加し、`.venv` 経由の実行でも circular import が再発しないことを確認できるようにした
+
 ## [0.17.0] - 2026-03-26
 
 ### Added
