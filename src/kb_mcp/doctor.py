@@ -165,6 +165,15 @@ def _runtime_checks() -> list[str]:
         "adr_rediscussion": 0,
         "cross_client_consistency": 0,
     }
+    learning_hygiene: dict[str, int] | None = {
+        "expired_active_packets": 0,
+        "packet_asset_mismatches": 0,
+        "orphan_applications": 0,
+        "legacy_wide_scope_fallbacks": 0,
+        "unknown_client_packets": 0,
+        "stale_session_local_assets": 0,
+        "stale_client_local_assets": 0,
+    }
     judge_metrics_error = None
     runtime_metrics_error = None
     fastpath_metrics_error = None
@@ -181,6 +190,7 @@ def _runtime_checks() -> list[str]:
             learning_packet_counts = store.learning_packet_counts()
             learning_revocation_count = store.learning_revocation_count()
             learning_outcomes = store.learning_outcome_metrics()
+            learning_hygiene = store.learning_runtime_hygiene_metrics()
         except sqlite3.Error as exc:
             runtime_metrics_error = exc.__class__.__name__
             judge_metrics_error = exc.__class__.__name__
@@ -190,6 +200,7 @@ def _runtime_checks() -> list[str]:
             learning_packet_counts = None
             learning_revocation_count = None
             learning_outcomes = None
+            learning_hygiene = None
     if materialization_counts is None:
         materialization_lines = [
             _fmt("Materialization records", runtime_metrics_error or "error", False),
@@ -210,6 +221,7 @@ def _runtime_checks() -> list[str]:
         or learning_packet_counts is None
         or learning_revocation_count is None
         or learning_outcomes is None
+        or learning_hygiene is None
     ):
         learning_lines = [
             _fmt("Learning assets", runtime_metrics_error or "error", False),
@@ -217,6 +229,7 @@ def _runtime_checks() -> list[str]:
             _fmt("Learning applications", runtime_metrics_error or "error", False),
             _fmt("Learning revocations", runtime_metrics_error or "error", False),
             _fmt("Learning outcomes", runtime_metrics_error or "error", False),
+            _fmt("Learning runtime hygiene", runtime_metrics_error or "error", False),
         ]
     else:
         learning_lines = [
@@ -233,6 +246,13 @@ def _runtime_checks() -> list[str]:
             _fmt_info("Learning knowledge re-query", str(learning_outcomes["knowledge_requery"])),
             _fmt_info("Learning ADR re-discussion", str(learning_outcomes["adr_rediscussion"])),
             _fmt_info("Learning cross-client consistency", str(learning_outcomes["cross_client_consistency"])),
+            _fmt("Learning expired active packets", str(learning_hygiene["expired_active_packets"]), learning_hygiene["expired_active_packets"] == 0),
+            _fmt("Learning packet asset mismatches", str(learning_hygiene["packet_asset_mismatches"]), learning_hygiene["packet_asset_mismatches"] == 0),
+            _fmt("Learning orphan applications", str(learning_hygiene["orphan_applications"]), learning_hygiene["orphan_applications"] == 0),
+            _fmt("Learning legacy wide-scope fallbacks", str(learning_hygiene["legacy_wide_scope_fallbacks"]), learning_hygiene["legacy_wide_scope_fallbacks"] == 0),
+            _fmt_info("Learning packets using unknown-client fallback", str(learning_hygiene["unknown_client_packets"])),
+            _fmt("Learning stale session-local assets", str(learning_hygiene["stale_session_local_assets"]), learning_hygiene["stale_session_local_assets"] == 0),
+            _fmt("Learning stale client-local assets", str(learning_hygiene["stale_client_local_assets"]), learning_hygiene["stale_client_local_assets"] == 0),
         ]
     fastpath_backend = fastpath_backend_status()
     try:
@@ -276,14 +296,20 @@ def check_mcp_registered(tool: str) -> tuple[bool, str]:
         path = claude_config_json()
         if not path.exists():
             return False, f"{path} not found"
-        data = json.loads(path.read_text(encoding="utf-8"))
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return False, f"{path} unreadable"
         servers = data.get("mcpServers", {})
         return ("kb" in servers, f"registered in {path}" if "kb" in servers else f"not registered in {path}")
     if tool == "copilot":
         path = copilot_home() / "mcp-config.json"
         if not path.exists():
             return False, f"{path} not found"
-        data = json.loads(path.read_text(encoding="utf-8"))
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return False, f"{path} unreadable"
         servers = data.get("mcpServers", data.get("servers", {}))
         return ("kb" in servers, f"registered in {path}" if "kb" in servers else f"not registered in {path}")
     if tool == "codex":
@@ -293,7 +319,10 @@ def check_mcp_registered(tool: str) -> tuple[bool, str]:
         path = home / "config.toml"
         if not path.exists():
             return False, f"{path} not found"
-        text = path.read_text(encoding="utf-8")
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            return False, f"{path} unreadable"
         return ("[mcp_servers.kb]" in text, f"registered in {path}" if "[mcp_servers.kb]" in text else f"not registered in {path}")
     return False, "unknown tool"
 

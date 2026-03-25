@@ -60,6 +60,13 @@ def _copilot_home() -> Path:
     return Path.home() / ".copilot"
 
 
+def _non_negative_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("must be >= 0")
+    return parsed
+
+
 def cmd_serve(_args: argparse.Namespace) -> None:
     """Start the MCP server (stdio transport)."""
     from kb_mcp.server import mcp
@@ -557,6 +564,7 @@ def cmd_worker(args: argparse.Namespace) -> None:
     from kb_mcp.events.worker import run_once
     from kb_mcp.events.retention import cleanup_runtime_artifacts
     from kb_mcp.events.store import EventStore
+    from kb_mcp.learning.runtime_hygiene import repair_learning_runtime
 
     if args.worker_command == "run-once":
         result = run_once(maintenance=args.maintenance)
@@ -576,6 +584,13 @@ def cmd_worker(args: argparse.Namespace) -> None:
             candidate_days=args.candidates_days,
             promotion_days=args.promotions_days,
             record_days=args.records_days,
+        )
+        print(json.dumps(result, ensure_ascii=False))
+        return
+    if args.worker_command == "repair-learning-runtime":
+        result = repair_learning_runtime(
+            session_local_days=args.session_local_days,
+            client_local_days=args.client_local_days,
         )
         print(json.dumps(result, ensure_ascii=False))
         return
@@ -1034,6 +1049,9 @@ def build_parser() -> argparse.ArgumentParser:
     cleanup_parser.add_argument("--candidates-days", type=int, default=14)
     cleanup_parser.add_argument("--promotions-days", type=int, default=30)
     cleanup_parser.add_argument("--records-days", type=int, default=30)
+    repair_learning_parser = worker_sub.add_parser("repair-learning-runtime", help="Repair runtime learning hygiene issues")
+    repair_learning_parser.add_argument("--session-local-days", type=_non_negative_int, default=1)
+    repair_learning_parser.add_argument("--client-local-days", type=_non_negative_int, default=7)
 
     # session run
     session_parser = sub.add_parser("session", help="Managed session commands")

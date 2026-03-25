@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import json
-from typing import Any
 
 from kb_mcp.events.store import EventStore
+from kb_mcp.learning.distribution import scope_distribution_metadata
 
 
 def promote_learning_scopes(*, store: EventStore | None = None) -> dict[str, object]:
@@ -77,23 +77,11 @@ def promote_learning_scopes(*, store: EventStore | None = None) -> dict[str, obj
             )
             promoted.append({"asset_key": general_asset_key, "scope": "general"})
     return {"promoted": len(promoted), "results": promoted}
-
-
-def scope_distribution_metadata(memory_class: str) -> dict[str, Any]:
-    if memory_class == "knowledge":
-        return {"distribution_allowed": True, "secrecy_boundary": "general"}
-    if memory_class == "gap":
-        return {"distribution_allowed": True, "secrecy_boundary": "user"}
-    if memory_class == "adr":
-        return {"distribution_allowed": False, "secrecy_boundary": "project"}
-    return {"distribution_allowed": False, "secrecy_boundary": "project"}
-
-
 def _traceability(
-    metadata: dict[str, Any],
+    metadata: dict[str, object],
     assets: list[object],
     projects: list[str],
-) -> dict[str, Any]:
+) -> dict[str, object]:
     return {
         "promotion_source": "scope_promotion",
         "distribution_allowed": metadata["distribution_allowed"],
@@ -103,7 +91,7 @@ def _traceability(
     }
 
 
-def _json_dict(value: object) -> dict[str, Any]:
+def _json_dict(value: object) -> dict[str, object]:
     if not value:
         return {}
     loaded = json.loads(str(value))

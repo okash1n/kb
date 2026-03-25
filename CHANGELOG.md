@@ -7,6 +7,18 @@
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-03-26
+
+### Added
+
+- `docs/learning-runtime-hygiene.md` を追加し、doctor が表示する learning runtime hygiene 指標と `kb-mcp worker repair-learning-runtime` の使い方を整理した
+- `kb-mcp worker repair-learning-runtime` を追加し、expired packet / stale local asset / orphan application / legacy wide-scope traceability fallback を runtime 上で補修できるようにした
+
+### Changed
+
+- `doctor` に learning runtime hygiene lines を追加し、packet asset mismatch、orphan application、stale local asset、legacy traceability fallback を診断できるようにした
+- malformed な legacy `traceability_json` が混ざっていても hygiene 集計と repair が落ちないようにし、Codex MCP config も unreadable fallback で安全に扱うようにした
+
 ## [0.15.1] - 2026-03-26
 
 ### Added
