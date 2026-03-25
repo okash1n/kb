@@ -4,6 +4,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from kb_mcp.config import general_dir, kb_data_root, projects_dir
+from kb_mcp.learning.policy_snapshot import load_policy_snapshots
 from kb_mcp.note import parse_frontmatter
 
 
@@ -19,6 +20,10 @@ def kb_graduate() -> str:
     project_root = projects_dir()
     if not project_root.exists():
         return "No projects found."
+
+    snapshot_lines = _render_policy_snapshots()
+    if snapshot_lines:
+        return "\n".join(snapshot_lines)
 
     knowledge_notes: list[dict] = []
     gap_notes: list[dict] = []
@@ -66,6 +71,20 @@ def kb_graduate() -> str:
         return "No graduation candidates found. Need notes in 2+ projects to detect cross-project patterns."
 
     return "\n".join(proposals)
+
+
+def _render_policy_snapshots() -> list[str]:
+    snapshots = load_policy_snapshots()
+    if not snapshots:
+        return []
+    lines = ["## Runtime policy snapshots", ""]
+    for snapshot in snapshots:
+        target = str(snapshot.get("target", "unknown"))
+        count = int(snapshot.get("policy_count", 0))
+        path = str(snapshot.get("path", ""))
+        lines.append(f"- **{target}** ({count} policies)")
+        lines.append(f"  - snapshot: {path}")
+    return lines
 
 
 def _read_note(md_file: Path, project: str) -> dict | None:

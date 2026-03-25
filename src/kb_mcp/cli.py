@@ -839,6 +839,12 @@ def cmd_judge_expire_learning(args: argparse.Namespace) -> None:
     print(json.dumps(result, ensure_ascii=False))
 
 
+def cmd_judge_build_policy_snapshots(_args: argparse.Namespace) -> None:
+    from kb_mcp.learning.policy_snapshot import build_policy_snapshots
+
+    print(json.dumps(build_policy_snapshots(), ensure_ascii=False))
+
+
 def cmd_judge_retry_failed_materializations(args: argparse.Namespace) -> None:
     """Requeue repairable materialization records."""
     from kb_mcp.events.worker import retry_failed_materializations
@@ -1074,6 +1080,7 @@ def build_parser() -> argparse.ArgumentParser:
     judge_expire_learning_parser.add_argument("--reason", required=True)
     judge_expire_learning_parser.add_argument("--actor", default="operator")
     judge_expire_learning_parser.add_argument("--limit", type=int, default=100)
+    judge_sub.add_parser("build-policy-snapshots", help="Build runtime policy snapshots from active learning assets")
     judge_retry_parser = judge_sub.add_parser("retry-failed-materializations", help="Requeue repairable materializations")
     judge_retry_parser.add_argument("--limit", type=int, default=50)
 
@@ -1134,6 +1141,8 @@ def main() -> None:
             cmd_judge_supersede_learning(args)
         elif args.judge_command == "expire-learning":
             cmd_judge_expire_learning(args)
+        elif args.judge_command == "build-policy-snapshots":
+            cmd_judge_build_policy_snapshots(args)
         elif args.judge_command == "retry-failed-materializations":
             cmd_judge_retry_failed_materializations(args)
         else:
