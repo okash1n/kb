@@ -7,6 +7,17 @@
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-03-26
+
+### Added
+
+- `learning_assets` canonical table と store API を追加し、runtime learning contract の最小 10 項目を永続化できるようにした
+
+### Changed
+
+- event DB schema version を `5` に上げ、既存の accepted / relabeled / materialized candidate から canonical learning asset を idempotent に backfill するようにした
+- schema migration 後も既存の judge / review / materialize フローが継続動作するように回帰テストを拡張した
+
 ## [0.7.0] - 2026-03-25
 
 ### Added
