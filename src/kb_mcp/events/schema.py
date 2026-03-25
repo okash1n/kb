@@ -10,7 +10,7 @@ from pathlib import Path
 from kb_mcp.config import runtime_events_db_path, runtime_events_dir
 from kb_mcp.events.learning_contract import default_backfilled_asset_fields
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 _PROMOTION_CANDIDATES_TABLE_SQL = """
     CREATE TABLE IF NOT EXISTS promotion_candidates (
@@ -95,6 +95,19 @@ _LEARNING_APPLICATIONS_TABLE_SQL = """
       save_request_id TEXT,
       saved_note_id TEXT,
       saved_note_path TEXT,
+      created_at TEXT NOT NULL
+    )
+"""
+
+_LEARNING_REVOCATIONS_TABLE_SQL = """
+    CREATE TABLE IF NOT EXISTS learning_revocations (
+      revocation_id TEXT PRIMARY KEY,
+      asset_key TEXT NOT NULL REFERENCES learning_assets(asset_key),
+      action TEXT NOT NULL CHECK (action IN ('retract', 'supersede', 'expire')),
+      actor TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      replacement_asset_key TEXT,
+      invalidated_packet_count INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL
     )
 """
@@ -298,6 +311,8 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute(_LEARNING_PACKETS_TABLE_SQL)
     conn.execute(_LEARNING_PACKET_ASSETS_TABLE_SQL)
     conn.execute(_LEARNING_APPLICATIONS_TABLE_SQL)
+    conn.execute(_LEARNING_REVOCATIONS_TABLE_SQL)
+    _ensure_learning_packet_columns(conn)
     _backfill_learning_assets(conn)
     conn.execute(
         "INSERT INTO schema_meta(key, value) VALUES('schema_version', ?) "
@@ -380,7 +395,7 @@ def _backfill_learning_assets(conn: sqlite3.Connection) -> None:
           SELECT candidate_key, MAX(review_seq) AS max_review_seq
           FROM materialization_records
           GROUP BY candidate_key
-        )
+            )
         SELECT
           pc.candidate_key,
           pc.label AS candidate_label,
@@ -497,6 +512,17 @@ def _backfill_learning_assets(conn: sqlite3.Connection) -> None:
                 updated_at,
             ),
         )
+
+
+def _ensure_learning_packet_columns(conn: sqlite3.Connection) -> None:
+    rows = conn.execute("PRAGMA table_info(learning_packets)").fetchall()
+    columns = {str(row["name"]) for row in rows}
+    if "expires_at" not in columns:
+        conn.execute("ALTER TABLE learning_packets ADD COLUMN expires_at TEXT")
+    if "invalidated_at" not in columns:
+        conn.execute("ALTER TABLE learning_packets ADD COLUMN invalidated_at TEXT")
+    if "invalidation_reason" not in columns:
+        conn.execute("ALTER TABLE learning_packets ADD COLUMN invalidation_reason TEXT")
 
 
 def _learning_asset_key(*, candidate_key: str, review_seq: int, memory_class: str, scope: str) -> str:

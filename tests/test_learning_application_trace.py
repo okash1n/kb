@@ -68,9 +68,17 @@ class LearningApplicationTraceTest(unittest.TestCase):
         counts = store.learning_packet_counts()
         self.assertEqual(counts["packets"], 1)
         self.assertEqual(counts["applications"], 1)
+        packet_id = None
         with store.transaction() as conn:
+            packet_id = str(
+                conn.execute(
+                    "SELECT packet_id FROM learning_packets ORDER BY created_at DESC LIMIT 1"
+                ).fetchone()["packet_id"]
+            )
             row = conn.execute(
                 "SELECT raw_payload_json FROM events WHERE aggregate_type='tool' AND event_name='tool_started' ORDER BY rowid DESC LIMIT 1"
             ).fetchone()
+        packet_row = store.get_learning_packet(packet_id)
         payload = json.loads(row["raw_payload_json"])
         self.assertIn("packet_id", payload)
+        self.assertIsNotNone(packet_row["expires_at"])

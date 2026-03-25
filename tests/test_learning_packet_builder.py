@@ -64,3 +64,6 @@ class LearningPacketBuilderTest(unittest.TestCase):
         self.assertIsNotNone(packet)
         counts = store.learning_packet_counts()
         self.assertEqual(counts["packets"], 1)
+        packet_row = store.get_learning_packet(str(packet["packet_id"]))
+        self.assertEqual(packet_row["status"], "active")
+        self.assertIsNotNone(packet_row["expires_at"])

@@ -7,6 +7,18 @@
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-03-26
+
+### Added
+
+- `kb-mcp judge retract-learning` / `supersede-learning` / `expire-learning` を追加し、runtime learning asset の revoke 系操作を CLI から実行できるようにした
+- `learning_revocations` ledger と packet TTL / invalidation metadata を追加し、trace と revocation を永続的に結び付けられるようにした
+
+### Changed
+
+- learning packet に TTL を持たせ、asset の retract / supersede / expire 時に関連 packet を invalidated に落とすようにした
+- `doctor` に invalidated packet と revocation 件数を追加し、runtime safety rail の観測性を改善した
+
 ## [0.11.1] - 2026-03-26
 
 ### Added
