@@ -16,6 +16,7 @@ from kb_mcp.events.middleware import with_tool_events
 from kb_mcp.events.normalize import normalize_event
 from kb_mcp.events.store import EventStore
 from kb_mcp.events.worker import run_once
+from kb_mcp.note import parse_frontmatter
 
 
 class EventPipelineTest(unittest.TestCase):
@@ -257,6 +258,98 @@ class EventPipelineTest(unittest.TestCase):
             ).fetchall()
         payloads = [json.loads(row["raw_payload_json"]) for row in rows if row["event_name"] == "tool_succeeded"]
         self.assertEqual(payloads[0]["saved_note_type"], "draft")
+
+    def test_gap_save_promotes_rich_session_log(self) -> None:
+        store = EventStore()
+        base = {
+            "project": self.project,
+            "cwd": str(self.vault),
+            "session_id": "session-rich",
+        }
+        store.append(
+            normalize_event(
+                tool="codex",
+                client="codex-cli",
+                layer="client_hook",
+                event="turn_checkpointed",
+                payload={**base, "summary": "最初の相談", "content": "ここで前提を揃えた"},
+            )
+        )
+        store.append(
+            normalize_event(
+                tool="codex",
+                client="codex-cli",
+                layer="client_hook",
+                event="turn_checkpointed",
+                payload={**base, "summary": "方針が固まった", "content": "session log は薄くしたい"},
+            )
+        )
+
+        from kb_mcp.server import gap
+
+        with patch("kb_mcp.tools.save._resolve_or_error", return_value=(self.project, "github.com/example/repo")):
+            gap(
+                slug="too-long",
+                summary="長すぎて読まれへん",
+                content="もっと短く返してほしい",
+                ai_tool="codex",
+                ai_client="codex-cli",
+                project=self.project,
+                ctx=None,
+            )
+
+        gap_files = sorted((self.vault / "projects" / self.project / "gap").glob("*.md"))
+        gap_fm = parse_frontmatter(gap_files[0].read_text(encoding="utf-8")) or {}
+        session_files = sorted((self.vault / "projects" / self.project / "session-log").glob("*.md"))
+        self.assertEqual(len(session_files), 1)
+        text = session_files[0].read_text(encoding="utf-8")
+        fm = parse_frontmatter(text) or {}
+        self.assertEqual(fm.get("density"), "rich")
+        self.assertIn(gap_fm["id"], fm.get("related", []))
+        self.assertIn("最初の相談", text)
+        self.assertIn("方針が固まった", text)
+
+    def test_final_hint_checkpoint_promotes_thin_session_log(self) -> None:
+        store = EventStore()
+        base = {
+            "project": self.project,
+            "cwd": str(self.vault),
+            "session_id": "session-thin",
+        }
+        store.append(
+            normalize_event(
+                tool="codex",
+                client="codex-cli",
+                layer="client_hook",
+                event="turn_checkpointed",
+                payload={**base, "summary": "最初のやりとり", "content": "まず現状を確認した"},
+            )
+        )
+        store.append(
+            normalize_event(
+                tool="codex",
+                client="codex-cli",
+                layer="client_hook",
+                event="turn_checkpointed",
+                payload={
+                    **base,
+                    "summary": "ここで一区切り",
+                    "content": "thin log にまとまるはずや",
+                    "final_hint": True,
+                    "checkpoint_kind": "session_end",
+                },
+            )
+        )
+
+        result = run_once(maintenance=True)
+        self.assertGreaterEqual(result["applied"], 1)
+        session_files = sorted((self.vault / "projects" / self.project / "session-log").glob("*.md"))
+        self.assertEqual(len(session_files), 1)
+        text = session_files[0].read_text(encoding="utf-8")
+        fm = parse_frontmatter(text) or {}
+        self.assertEqual(fm.get("density"), "thin")
+        self.assertIn("最初のやりとり", text)
+        self.assertIn("ここで一区切り", text)
 
     def test_transcript_excerpt_wins_over_summary_when_content_missing(self) -> None:
         transcript = self.vault / "transcript.txt"

@@ -210,6 +210,8 @@ def _merge_envelope(conn: sqlite3.Connection, envelope: EventEnvelope) -> tuple[
             status = "ready"
             if envelope.event_name == "tool_failed":
                 queued = ["incident_writer"]
+            elif _is_anchor_save(envelope):
+                queued = ["promotion_planner", "promotion_applier"]
         else:
             status = "collecting"
     elif envelope.aggregate_type == "error":
@@ -222,6 +224,8 @@ def _merge_envelope(conn: sqlite3.Connection, envelope: EventEnvelope) -> tuple[
             detected = detect_candidates(envelope.summary, envelope.content_excerpt)
             if detected["has_candidates"]:
                 queued.append("candidate_writer")
+            if _needs_thin_promotion(envelope):
+                queued.extend(["promotion_planner", "promotion_applier"])
         else:
             status = "collecting"
 
@@ -282,6 +286,20 @@ def _merge_envelope(conn: sqlite3.Connection, envelope: EventEnvelope) -> tuple[
             (envelope.logical_key, version, sink_name, now, now),
         )
     return version, status, queued
+
+
+def _is_anchor_save(envelope: EventEnvelope) -> bool:
+    if envelope.event_name != "tool_succeeded":
+        return False
+    note_type = envelope.raw_payload.get("saved_note_type")
+    return note_type in {"gap", "knowledge", "adr"}
+
+
+def _needs_thin_promotion(envelope: EventEnvelope) -> bool:
+    if envelope.event_name not in {"compact_finished", "turn_checkpointed"}:
+        return False
+    state = envelope.aggregate_state
+    return bool(state.get("final_hint")) or state.get("checkpoint_kind") == "session_end"
 
 
 def _assign_checkpoint_identity(conn: sqlite3.Connection, envelope: EventEnvelope) -> None:
