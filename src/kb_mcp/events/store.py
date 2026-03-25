@@ -17,6 +17,7 @@ class EventStore:
     def append(self, envelope: EventEnvelope) -> DispatchResult:
         """Persist an event and merge it into an aggregate."""
         with self.transaction() as conn:
+            _assign_checkpoint_identity(conn, envelope)
             conn.execute(
                 """
                 INSERT INTO events(
@@ -99,8 +100,12 @@ class EventStore:
                 (logical_key, aggregate_version, sink_name, receipt, utc_now_iso()),
             )
             conn.execute(
-                "UPDATE logical_events SET status='applied', updated_at=? WHERE logical_key=?",
-                (utc_now_iso(), logical_key),
+                """
+                UPDATE logical_events
+                SET status='applied', updated_at=?
+                WHERE logical_key=? AND aggregate_version=?
+                """,
+                (utc_now_iso(), logical_key, aggregate_version),
             )
 
     def mark_sink_failed(self, row_id: int, message: str) -> None:
@@ -264,6 +269,45 @@ def _merge_envelope(conn: sqlite3.Connection, envelope: EventEnvelope) -> tuple[
             (envelope.logical_key, version, sink_name, now, now),
         )
     return version, status, queued
+
+
+def _assign_checkpoint_identity(conn: sqlite3.Connection, envelope: EventEnvelope) -> None:
+    if envelope.aggregate_type != "compact":
+        return
+    partition_key = envelope.aggregate_state.get("checkpoint_partition_key")
+    if not partition_key:
+        return
+    ordinal = envelope.aggregate_state.get("checkpoint_ordinal")
+    if ordinal:
+        row = conn.execute(
+            "SELECT next_ordinal FROM checkpoint_sequences WHERE partition_key=?",
+            (partition_key,),
+        ).fetchone()
+        next_ordinal = max(int(ordinal) + 1, int(row["next_ordinal"]) if row else 1)
+        conn.execute(
+            """
+            INSERT INTO checkpoint_sequences(partition_key, next_ordinal)
+            VALUES (?, ?)
+            ON CONFLICT(partition_key) DO UPDATE SET next_ordinal=excluded.next_ordinal
+            """,
+            (partition_key, next_ordinal),
+        )
+        return
+    row = conn.execute(
+        "SELECT next_ordinal FROM checkpoint_sequences WHERE partition_key=?",
+        (partition_key,),
+    ).fetchone()
+    next_ordinal = int(row["next_ordinal"]) if row else 1
+    conn.execute(
+        """
+        INSERT INTO checkpoint_sequences(partition_key, next_ordinal)
+        VALUES (?, ?)
+        ON CONFLICT(partition_key) DO UPDATE SET next_ordinal=excluded.next_ordinal
+        """,
+        (partition_key, next_ordinal + 1),
+    )
+    envelope.aggregate_state["checkpoint_ordinal"] = next_ordinal
+    envelope.logical_key = f"compact:{partition_key}:{next_ordinal}"
 
 
 def _promote_pending_sessions(conn: sqlite3.Connection) -> None:
