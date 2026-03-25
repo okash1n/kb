@@ -7,6 +7,18 @@
 
 ## [Unreleased]
 
+## [0.15.1] - 2026-03-26
+
+### Added
+
+- `docs/learning-client-capabilities.md` を追加し、Claude / Copilot / Codex / unknown client ごとの runtime learning capability rule を明文化した
+
+### Changed
+
+- resolver と packet builder に cross-client capability control を追加し、Copilot 系では `general` scope を omit、`user_global` force を段階的に downgrade するようにした
+- unknown client は fail-close で local scope のみ許可し、`copilot-*` / `claude-*` / `codex-*` の variant は family alias で既知 capability に解決するようにした
+- wide scope asset の `secrecy_boundary` は明示値を優先しつつ、legacy row では `memory_class` 由来 metadata から compatibility fallback できるようにした
+
 ## [0.15.0] - 2026-03-26
 
 ### Added

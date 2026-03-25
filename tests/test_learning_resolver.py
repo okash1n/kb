@@ -60,6 +60,7 @@ class LearningResolverTest(unittest.TestCase):
             confidence="stable",
             force="default",
             provenance={"project": self.project, "source_client": "codex-cli", "session_id": "session-1"},
+            traceability={"distribution_allowed": True, "secrecy_boundary": "general"},
         )
         self._seed_asset(
             store,
@@ -180,16 +181,83 @@ class LearningResolverTest(unittest.TestCase):
 
         self.assertEqual([item.asset_key for item in resolved], ["asset-match"])
 
+    def test_resolver_enforces_client_specific_distribution(self) -> None:
+        store = EventStore()
+        self._seed_asset(
+            store,
+            asset_key="asset-general",
+            scope="general",
+            provenance={"project": self.project},
+            traceability={"distribution_allowed": True, "secrecy_boundary": "general"},
+        )
+        self._seed_asset(
+            store,
+            asset_key="asset-user-global",
+            scope="user_global",
+            provenance={"project": self.project},
+            traceability={"distribution_allowed": True, "secrecy_boundary": "user"},
+        )
+
+        copilot = resolve_learning_assets(
+            ResolverInput(source_tool="copilot", source_client="copilot-cli", project=self.project),
+            store=store,
+        )
+        claude = resolve_learning_assets(
+            ResolverInput(source_tool="claude", source_client="claude-code", project=self.project),
+            store=store,
+        )
+
+        self.assertEqual([item.asset_key for item in copilot], ["asset-user-global"])
+        self.assertEqual([item.asset_key for item in claude], ["asset-user-global", "asset-general"])
+
+    def test_resolver_applies_compatibility_fallback_for_wide_scope_metadata(self) -> None:
+        store = EventStore()
+        self._seed_asset(
+            store,
+            asset_key="asset-general-legacy",
+            memory_class="knowledge",
+            scope="general",
+            provenance={"project": self.project},
+            traceability={},
+        )
+
+        resolved = resolve_learning_assets(
+            ResolverInput(source_tool="claude", source_client="claude-code", project=self.project),
+            store=store,
+        )
+
+        self.assertEqual([item.asset_key for item in resolved], ["asset-general-legacy"])
+
+    def test_resolver_keeps_narrow_scope_assets_without_boundary_for_copilot(self) -> None:
+        store = EventStore()
+        self._seed_asset(
+            store,
+            asset_key="asset-project-knowledge",
+            memory_class="knowledge",
+            scope="project_local",
+            provenance={"project": self.project},
+            traceability={},
+        )
+
+        resolved = resolve_learning_assets(
+            ResolverInput(source_tool="copilot", source_client="copilot-cli", project=self.project),
+            store=store,
+        )
+
+        self.assertEqual([item.asset_key for item in resolved], ["asset-project-knowledge"])
+
     def _seed_asset(
         self,
         store: EventStore,
         *,
         asset_key: str,
+        memory_class: str = "gap",
         scope: str,
         confidence: str = "reviewed",
         force: str = "preferred",
         updated_at: str = "2026-03-26T00:00:00+00:00",
         provenance: dict[str, object],
+        traceability: dict[str, object] | None = None,
     ) -> None:
         store.upsert_learning_asset(
             asset_key=asset_key,
@@ -198,14 +266,14 @@ class LearningResolverTest(unittest.TestCase):
             materialization_key=None,
             note_id=None,
             note_path=None,
-            memory_class="gap",
+            memory_class=memory_class,
             update_target="behavior_style",
             scope=scope,
             force=force,
             confidence=confidence,
             lifecycle="active",
             provenance=provenance,
-            traceability={},
+            traceability=traceability or {},
             revocation_path={},
             learning_state_visibility="active",
             source_status="materialized",
