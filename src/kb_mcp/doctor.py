@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import shutil
 from pathlib import Path
 
@@ -48,6 +49,10 @@ def run_doctor(*, no_version_check: bool = False) -> str:
 def _fmt(label: str, value: str, ok: bool) -> str:
     mark = "✓" if ok else "✗"
     return f"{label}: {value} {mark}"
+
+
+def _fmt_info(label: str, value: str) -> str:
+    return f"{label}: {value}"
 
 
 def _tool_checks() -> list[str]:
@@ -109,12 +114,33 @@ def _runtime_checks() -> list[str]:
     candidates = len(list((root / "candidates").glob("*.json"))) if (root / "candidates").exists() else 0
     promotions = len(list((root / "promotions").glob("*.json"))) if (root / "promotions").exists() else 0
     records = len(list((root / "promotion-records").glob("*.json"))) if (root / "promotion-records").exists() else 0
-    dead_letters = EventStore().dead_letter_count() if runtime_events_db_path().exists() else 0
+    judge_counts = {"ready": 0, "judged": 0, "superseded": 0, "failed": 0}
+    pending_reviews = 0
+    review_count = 0
+    dead_letters = 0
+    judge_metrics_error = None
+    runtime_metrics_error = None
+    if runtime_events_db_path().exists():
+        try:
+            store = EventStore()
+            dead_letters = store.dead_letter_count()
+            judge_counts = store.judge_run_counts()
+            pending_reviews = store.pending_review_candidate_count()
+            review_count = store.candidate_review_count()
+        except sqlite3.Error as exc:
+            runtime_metrics_error = exc.__class__.__name__
+            judge_metrics_error = exc.__class__.__name__
     return [
         _fmt("Checkpoints", str(checkpoints), True),
         _fmt("Candidates", str(candidates), True),
         _fmt("Promotion plans", str(promotions), True),
         _fmt("Promotion records", str(records), True),
+        _fmt_info("Judge runs pending", str(judge_counts["ready"])),
+        _fmt_info("Review candidates pending", str(pending_reviews)),
+        _fmt_info("Candidate reviews", str(review_count)),
+        _fmt("Judge failures", str(judge_counts["failed"]), judge_counts["failed"] == 0),
+        _fmt("Judge metrics", judge_metrics_error or "ok", judge_metrics_error is None),
+        _fmt("Runtime metrics", runtime_metrics_error or "ok", runtime_metrics_error is None),
         _fmt("Dead letters", str(dead_letters), dead_letters == 0),
     ]
 

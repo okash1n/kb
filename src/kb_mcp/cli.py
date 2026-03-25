@@ -594,6 +594,89 @@ def cmd_judge_review_candidates(args: argparse.Namespace) -> None:
     )
 
 
+def _candidate_review_payload(candidate_key: str) -> dict[str, object]:
+    from kb_mcp.events.store import EventStore
+
+    store = EventStore()
+    candidate = store.get_promotion_candidate(candidate_key)
+    if candidate is None:
+        raise ValueError(f"candidate not found: {candidate_key}")
+    judge_row = store.get_judge_run_by_key(str(candidate["judge_run_key"]))
+    if judge_row is None:
+        raise ValueError(f"judge run not found for candidate: {candidate_key}")
+    labels = json.loads(str(judge_row["labels_json"]))
+    return {
+        "store": store,
+        "candidate": candidate,
+        "judge_run": judge_row,
+        "ai_labels": labels,
+        "ai_score": {
+            "label": candidate["label"],
+            "score": candidate["score"],
+        },
+    }
+
+
+def _cmd_judge_review(args: argparse.Namespace, *, verdict: str) -> None:
+    from kb_mcp.events.store import EventStore
+    from kb_mcp.note import generate_ulid
+
+    try:
+        payload = _candidate_review_payload(args.candidate_key)
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
+    store = payload["store"]
+    assert isinstance(store, EventStore)
+    candidate = payload["candidate"]
+    judge_run = payload["judge_run"]
+    human_label = getattr(args, "label", None)
+    try:
+        review_seq = store.record_candidate_review(
+            review_id=generate_ulid(),
+            candidate_key=args.candidate_key,
+            window_id=str(candidate["window_id"]),
+            judge_run_key=str(judge_run["judge_run_key"]),
+            ai_labels=list(payload["ai_labels"]),
+            ai_score=dict(payload["ai_score"]),
+            human_verdict=verdict,
+            human_label=human_label,
+            review_comment=getattr(args, "comment", None),
+            reviewed_by=getattr(args, "reviewed_by", None),
+        )
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
+    updated = store.get_promotion_candidate(args.candidate_key)
+    print(
+        json.dumps(
+            {
+                "candidate_key": args.candidate_key,
+                "review_seq": review_seq,
+                "human_verdict": verdict,
+                "human_label": human_label,
+                "status": updated["status"] if updated is not None else None,
+            },
+            ensure_ascii=False,
+        )
+    )
+
+
+def cmd_judge_accept(args: argparse.Namespace) -> None:
+    """Accept a promotion candidate."""
+    _cmd_judge_review(args, verdict="accepted")
+
+
+def cmd_judge_reject(args: argparse.Namespace) -> None:
+    """Reject a promotion candidate."""
+    _cmd_judge_review(args, verdict="rejected")
+
+
+def cmd_judge_relabel(args: argparse.Namespace) -> None:
+    """Relabel a promotion candidate."""
+    _cmd_judge_review(args, verdict="relabeled")
+
+
 def _version_text() -> str:
     """Return a human-readable kb-mcp version string."""
     from kb_mcp.update import current_version
@@ -784,6 +867,19 @@ def build_parser() -> argparse.ArgumentParser:
     judge_review_parser = judge_sub.add_parser("review-candidates", help="Build judge runs and print pending review candidates")
     judge_review_parser.add_argument("--limit", type=int, default=50)
     judge_review_parser.add_argument("--model-hint")
+    judge_accept_parser = judge_sub.add_parser("accept", help="Accept a pending candidate")
+    judge_accept_parser.add_argument("candidate_key")
+    judge_accept_parser.add_argument("--comment")
+    judge_accept_parser.add_argument("--reviewed-by")
+    judge_reject_parser = judge_sub.add_parser("reject", help="Reject a pending candidate")
+    judge_reject_parser.add_argument("candidate_key")
+    judge_reject_parser.add_argument("--comment")
+    judge_reject_parser.add_argument("--reviewed-by")
+    judge_relabel_parser = judge_sub.add_parser("relabel", help="Relabel a pending candidate")
+    judge_relabel_parser.add_argument("candidate_key")
+    judge_relabel_parser.add_argument("--label", required=True, choices=["adr", "gap", "knowledge", "session_thin"])
+    judge_relabel_parser.add_argument("--comment")
+    judge_relabel_parser.add_argument("--reviewed-by")
 
     return parser
 
@@ -826,6 +922,12 @@ def main() -> None:
     elif args.command == "judge":
         if args.judge_command == "review-candidates":
             cmd_judge_review_candidates(args)
+        elif args.judge_command == "accept":
+            cmd_judge_accept(args)
+        elif args.judge_command == "reject":
+            cmd_judge_reject(args)
+        elif args.judge_command == "relabel":
+            cmd_judge_relabel(args)
         else:
             parser.parse_args(["judge", "--help"])
     elif args.command == "version":

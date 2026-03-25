@@ -166,6 +166,47 @@ class JudgeCliTest(unittest.TestCase):
             ).fetchall()
         self.assertTrue(all(int(row["suggestion_seq"]) == 1 for row in rows))
 
+    def test_review_candidates_resuggests_backlog_when_new_candidate_arrives(self) -> None:
+        for idx in range(5):
+            self._append_checkpoint_sequence(
+                session_id=f"session-resuggest-{idx}",
+                payloads=[{"summary": "これでいこう", "content": "案Bにする", "occurred_at": f"2026-03-25T00:1{idx}:00+00:00"}],
+            )
+        first = self._run_review_candidates(
+            backend=_StubBackend(
+                {
+                    "labels": [{"label": "adr", "score": 0.9, "reasons": ["agreement"]}],
+                    "carry_forward": False,
+                }
+            ),
+            limit=10,
+        )
+        self.assertEqual(first["suggested"], 5)
+
+        self._append_checkpoint_sequence(
+            session_id="session-resuggest-new",
+            payloads=[{"summary": "これでいこう", "content": "案Cにする", "occurred_at": "2026-03-25T00:20:00+00:00"}],
+        )
+        second = self._run_review_candidates(
+            backend=_StubBackend(
+                {
+                    "labels": [{"label": "adr", "score": 0.9, "reasons": ["agreement"]}],
+                    "carry_forward": False,
+                }
+            ),
+            limit=10,
+        )
+
+        self.assertEqual(second["pending_review"], 6)
+        self.assertEqual(second["suggested"], 6)
+        with schema_locked_connection() as conn:
+            rows = conn.execute(
+                "SELECT suggestion_seq FROM promotion_candidates ORDER BY candidate_key"
+            ).fetchall()
+        seqs = [int(row["suggestion_seq"]) for row in rows]
+        self.assertEqual(seqs.count(2), 5)
+        self.assertEqual(seqs.count(1), 1)
+
     def _append_checkpoint_sequence(self, *, session_id: str, payloads: list[dict[str, str]]) -> None:
         store = EventStore()
         base = {

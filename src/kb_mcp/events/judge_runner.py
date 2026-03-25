@@ -150,8 +150,9 @@ def review_candidates(
     pending_review_count = store.pending_review_candidate_count()
     suggestable = store.suggestable_review_candidates()
     suggested = 0
-    if len(suggestable) >= SUGGESTION_THRESHOLD:
-        suggested = store.mark_candidates_suggested([row["candidate_key"] for row in suggestable])
+    if pending_review_count >= SUGGESTION_THRESHOLD and suggestable:
+        pending_rows = store.pending_review_candidates(limit=None)
+        suggested = store.mark_candidates_suggested([row["candidate_key"] for row in pending_rows])
 
     listed_rows = store.pending_review_candidates(limit=display_limit)
     return {
