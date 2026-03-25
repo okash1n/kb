@@ -7,6 +7,16 @@
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-03-26
+
+### Added
+
+- `kb_mcp.learning` package と `resolve_learning_assets()` を追加し、scope / confidence / force に基づく deterministic resolver を導入した
+
+### Changed
+
+- project resolver と middleware runtime context の bridge として、learning asset の applicable 判定を `session_local > client_local > project_local > user_global > general` で固定した
+
 ## [0.9.0] - 2026-03-26
 
 ### Added
