@@ -5,6 +5,7 @@ import stat
 import tempfile
 import unittest
 import json
+from unittest.mock import patch
 from pathlib import Path
 
 import yaml
@@ -163,6 +164,8 @@ class EventPipelineTest(unittest.TestCase):
         data = json.loads(checkpoints[0].read_text(encoding="utf-8"))
         self.assertTrue(data["candidates"]["has_candidates"])
         self.assertEqual(data["candidates"]["items"][0]["kind"], "gap")
+        candidate_files = sorted((self.config_dir / "runtime" / "events" / "candidates").glob("*.json"))
+        self.assertEqual(len(candidate_files), 1)
 
     def test_knowledge_candidate_requires_stronger_signal(self) -> None:
         detected = detect_candidates(
@@ -202,9 +205,58 @@ class EventPipelineTest(unittest.TestCase):
         logical_rows = []
         with EventStore().transaction() as conn:
             logical_rows = conn.execute(
-                "SELECT event_name FROM events WHERE aggregate_type='tool' ORDER BY rowid"
+                "SELECT event_name, logical_key, tool_call_id FROM events WHERE aggregate_type='tool' ORDER BY rowid"
             ).fetchall()
         self.assertEqual([row["event_name"] for row in logical_rows], ["tool_started", "tool_succeeded"])
+        self.assertEqual(logical_rows[0]["logical_key"], logical_rows[1]["logical_key"])
+        self.assertEqual(logical_rows[0]["tool_call_id"], logical_rows[1]["tool_call_id"])
+
+    def test_gap_save_emits_save_request_id_and_saved_note_metadata(self) -> None:
+        from kb_mcp.server import gap
+
+        with patch("kb_mcp.tools.save._resolve_or_error", return_value=(self.project, "github.com/example/repo")):
+            gap(
+                slug="test-gap",
+                summary="summary",
+                content="content",
+                ai_tool="codex",
+                ai_client="codex-cli",
+                project=self.project,
+                ctx=None,
+            )
+
+        with EventStore().transaction() as conn:
+            rows = conn.execute(
+                "SELECT event_name, raw_payload_json FROM events WHERE aggregate_type='tool' ORDER BY rowid"
+            ).fetchall()
+        payloads = [json.loads(row["raw_payload_json"]) for row in rows if row["event_name"] == "tool_succeeded"]
+        self.assertEqual(len(payloads), 1)
+        self.assertIn("save_request_id", payloads[0])
+        self.assertIn("saved_note_id", payloads[0])
+        self.assertEqual(payloads[0]["saved_note_type"], "gap")
+        note_files = sorted((self.vault / "projects" / self.project / "gap").glob("*.md"))
+        self.assertIn("save_request_id:", note_files[0].read_text(encoding="utf-8"))
+
+    def test_draft_save_emits_saved_note_metadata(self) -> None:
+        from kb_mcp.server import draft
+
+        with patch("kb_mcp.tools.save.resolve_project", return_value=(self.project, "github.com/example/repo")):
+            draft(
+                slug="test-draft",
+                summary="summary",
+                content="content",
+                ai_tool="codex",
+                ai_client="codex-cli",
+                project=self.project,
+                ctx=None,
+            )
+
+        with EventStore().transaction() as conn:
+            rows = conn.execute(
+                "SELECT event_name, raw_payload_json FROM events WHERE aggregate_type='tool' ORDER BY rowid DESC"
+            ).fetchall()
+        payloads = [json.loads(row["raw_payload_json"]) for row in rows if row["event_name"] == "tool_succeeded"]
+        self.assertEqual(payloads[0]["saved_note_type"], "draft")
 
     def test_transcript_excerpt_wins_over_summary_when_content_missing(self) -> None:
         transcript = self.vault / "transcript.txt"

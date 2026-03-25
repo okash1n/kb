@@ -4,20 +4,17 @@ from __future__ import annotations
 
 import os
 import inspect
-from contextvars import ContextVar
 from typing import Any, Callable, TypeVar
 from uuid import uuid4
 
 from mcp.server.fastmcp import Context
 
+from kb_mcp.events.request_context import REQUEST_CONTEXT
 from kb_mcp.events.normalize import normalize_event
 from kb_mcp.events.store import EventStore
 from kb_mcp.events.worker import run_once
 
 F = TypeVar("F", bound=Callable[..., Any])
-
-REQUEST_CONTEXT: ContextVar[dict[str, Any] | None] = ContextVar("kb_request_context", default=None)
-
 
 def _build_request_context(tool_name: str, ctx: Context | None) -> dict[str, Any]:
     request_id = None
@@ -35,6 +32,7 @@ def _build_request_context(tool_name: str, ctx: Context | None) -> dict[str, Any
         "correlation_id": correlation_id,
         "vendor_session_id": vendor_session_id,
         "tool_call_id": tool_call_id,
+        "save_request_id": str(uuid4()) if tool_name in {"adr", "gap", "knowledge", "session", "draft"} else None,
     }
 
 
@@ -48,7 +46,7 @@ def emit_tool_event(
     payload: dict[str, Any] | None = None,
 ) -> None:
     """Emit an authoritative tool event."""
-    request_context = _build_request_context(tool_name, ctx)
+    request_context = REQUEST_CONTEXT.get() or _build_request_context(tool_name, ctx)
     body = {
         "tool_name": tool_name,
         "tool_call_id": request_context["tool_call_id"],
@@ -101,6 +99,7 @@ def with_tool_events(source_tool: str, source_client: str, tool_name: str, fn: F
                 event_name="tool_succeeded",
                 tool_name=tool_name,
                 ctx=ctx,
+                payload=_success_payload(),
             )
             REQUEST_CONTEXT.reset(token)
             return result
@@ -137,8 +136,19 @@ def with_tool_events(source_tool: str, source_client: str, tool_name: str, fn: F
             event_name="tool_succeeded",
             tool_name=tool_name,
             ctx=ctx,
+            payload=_success_payload(),
         )
         REQUEST_CONTEXT.reset(token)
         return result
 
     return wrapped  # type: ignore[return-value]
+
+
+def _success_payload() -> dict[str, Any]:
+    current = REQUEST_CONTEXT.get() or {}
+    payload: dict[str, Any] = {}
+    for key in ["save_request_id", "saved_note_id", "saved_note_path", "saved_note_type"]:
+        value = current.get(key)
+        if value:
+            payload[key] = value
+    return payload

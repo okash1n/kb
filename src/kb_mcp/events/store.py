@@ -7,6 +7,7 @@ import sqlite3
 from contextlib import contextmanager
 from typing import Any
 
+from kb_mcp.events.candidates import detect_candidates
 from kb_mcp.events.schema import schema_locked_connection
 from kb_mcp.events.types import DispatchResult, EventEnvelope, utc_now_iso
 
@@ -99,14 +100,23 @@ class EventStore:
                 """,
                 (logical_key, aggregate_version, sink_name, receipt, utc_now_iso()),
             )
-            conn.execute(
+            remaining = conn.execute(
                 """
-                UPDATE logical_events
-                SET status='applied', updated_at=?
-                WHERE logical_key=? AND aggregate_version=?
+                SELECT COUNT(*) AS count
+                FROM outbox
+                WHERE logical_key=? AND aggregate_version=? AND status!='applied'
                 """,
-                (utc_now_iso(), logical_key, aggregate_version),
-            )
+                (logical_key, aggregate_version),
+            ).fetchone()
+            if int(remaining["count"]) == 0:
+                conn.execute(
+                    """
+                    UPDATE logical_events
+                    SET status='applied', updated_at=?
+                    WHERE logical_key=? AND aggregate_version=?
+                    """,
+                    (utc_now_iso(), logical_key, aggregate_version),
+                )
 
     def mark_sink_failed(self, row_id: int, message: str) -> None:
         with self.transaction() as conn:
@@ -209,6 +219,9 @@ def _merge_envelope(conn: sqlite3.Connection, envelope: EventEnvelope) -> tuple[
         if envelope.event_name in {"compact_finished", "turn_checkpointed"}:
             status = "ready"
             queued = ["checkpoint_writer"]
+            detected = detect_candidates(envelope.summary, envelope.content_excerpt)
+            if detected["has_candidates"]:
+                queued.append("candidate_writer")
         else:
             status = "collecting"
 

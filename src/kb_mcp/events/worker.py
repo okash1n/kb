@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from kb_mcp.events.policies.candidate_writer import write_candidates
 from kb_mcp.events.policies.checkpoint_writer import write_checkpoint
 from kb_mcp.events.policies.incident_writer import write_incident
 from kb_mcp.events.policies.session_finalizer import finalize_session
@@ -11,6 +12,7 @@ SINK_HANDLERS = {
     "session_finalizer": finalize_session,
     "incident_writer": write_incident,
     "checkpoint_writer": write_checkpoint,
+    "candidate_writer": write_candidates,
 }
 
 
