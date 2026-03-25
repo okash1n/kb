@@ -11,6 +11,21 @@
 
 - まだ未整理
 
+## [0.5.0] - 2026-03-25
+
+### Added
+
+- hook / tool / launcher の全入力をまず checkpoint と event store に集約し、その後段で memory promotion する基盤
+- `gap` / `knowledge` / `adr` 保存を anchor に rich `session-log` を昇格する planner / applier
+- `final_hint` / `checkpoint_kind=session_end` を使って thin `session-log` を切り出す planner / applier
+- `kb-mcp worker replay-dead-letter` と `kb-mcp worker cleanup-runtime`
+
+### Changed
+
+- `session-log` を主役ではなく checkpoint 群の編集済みビューとして扱うよう再設計
+- `doctor` に dead-letter と promotion runtime state の診断を追加
+- runtime artifact を `checkpoints` / `candidates` / `promotions` / `promotion-records` に整理
+
 ## [0.4.2] - 2026-03-25
 
 ### Fixed
