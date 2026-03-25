@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -92,6 +94,57 @@ class ScopePromotionTest(unittest.TestCase):
             store=store,
         )
         self.assertEqual(resolved, [])
+
+    def test_store_import_succeeds_in_fresh_python_process(self) -> None:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import kb_mcp.events.store as store; print(store.__name__)",
+            ],
+            cwd=str(Path(__file__).resolve().parents[1]),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertEqual(result.stdout.strip(), "kb_mcp.events.store")
+
+    def test_scope_promotion_import_succeeds_in_fresh_python_process(self) -> None:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import kb_mcp.learning.scope_promotion as module; print(callable(module.promote_learning_scopes))",
+            ],
+            cwd=str(Path(__file__).resolve().parents[1]),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertEqual(result.stdout.strip(), "True")
+
+    def test_promote_scopes_help_succeeds_in_fresh_python_process(self) -> None:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "kb_mcp.cli",
+                "judge",
+                "promote-scopes",
+                "--help",
+            ],
+            cwd=str(Path(__file__).resolve().parents[1]),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn("promote-scopes", result.stdout)
 
     def _seed_asset(self, store: EventStore, *, asset_key: str, project: str, memory_class: str) -> None:
         store.upsert_learning_asset(
