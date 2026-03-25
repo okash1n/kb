@@ -147,6 +147,17 @@ def _runtime_checks() -> list[str]:
         "failed": 0,
         "expired_applying": 0,
     }
+    learning_asset_counts: dict[str, int] | None = {"total": 0}
+    learning_visibility_counts: dict[str, int] | None = {
+        "candidate": 0,
+        "active": 0,
+        "held": 0,
+        "retractable": 0,
+        "superseded": 0,
+        "retracted": 0,
+        "expired": 0,
+    }
+    learning_packet_counts: dict[str, int] | None = {"packets": 0, "applications": 0}
     judge_metrics_error = None
     runtime_metrics_error = None
     fastpath_metrics_error = None
@@ -158,10 +169,16 @@ def _runtime_checks() -> list[str]:
             pending_reviews = store.pending_review_candidate_count()
             review_count = store.candidate_review_count()
             materialization_counts = store.materialization_counts()
+            learning_asset_counts = store.learning_asset_counts()
+            learning_visibility_counts = store.learning_visibility_counts()
+            learning_packet_counts = store.learning_packet_counts()
         except sqlite3.Error as exc:
             runtime_metrics_error = exc.__class__.__name__
             judge_metrics_error = exc.__class__.__name__
             materialization_counts = None
+            learning_asset_counts = None
+            learning_visibility_counts = None
+            learning_packet_counts = None
     if materialization_counts is None:
         materialization_lines = [
             _fmt("Materialization records", runtime_metrics_error or "error", False),
@@ -176,6 +193,22 @@ def _runtime_checks() -> list[str]:
             _fmt("Materializations failed", str(materialization_counts["failed"]), materialization_counts["failed"] == 0),
             _fmt("Materializations applying expired", str(materialization_counts["expired_applying"]), materialization_counts["expired_applying"] == 0),
         ]
+    if learning_asset_counts is None or learning_visibility_counts is None or learning_packet_counts is None:
+        learning_lines = [
+            _fmt("Learning assets", runtime_metrics_error or "error", False),
+            _fmt("Learning packets", runtime_metrics_error or "error", False),
+            _fmt("Learning applications", runtime_metrics_error or "error", False),
+        ]
+    else:
+        learning_lines = [
+            _fmt_info("Learning assets", str(learning_asset_counts["total"])),
+            _fmt_info("Learning packets", str(learning_packet_counts["packets"])),
+            _fmt_info("Learning applications", str(learning_packet_counts["applications"])),
+            _fmt_info("Learning candidate assets", str(learning_visibility_counts["candidate"])),
+            _fmt_info("Learning active assets", str(learning_visibility_counts["active"])),
+            _fmt_info("Learning held assets", str(learning_visibility_counts["held"])),
+            _fmt_info("Learning retractable assets", str(learning_visibility_counts["retractable"])),
+        ]
     fastpath_backend = fastpath_backend_status()
     try:
         fastpath_breakers = (
@@ -189,6 +222,7 @@ def _runtime_checks() -> list[str]:
         _fmt("Candidates", str(candidates), True),
         _fmt("Promotion plans", str(promotions), True),
         _fmt("Promotion records", str(records), True),
+        *learning_lines,
         *materialization_lines,
         _fmt_info(
             "Fast-path judge backend",

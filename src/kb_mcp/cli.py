@@ -764,6 +764,36 @@ def cmd_judge_materialize(args: argparse.Namespace) -> None:
     )
 
 
+def cmd_judge_learning_state(args: argparse.Namespace) -> None:
+    """Print current learning asset visibility state."""
+    from kb_mcp.events.store import EventStore
+
+    store = EventStore()
+    rows = store.list_learning_assets()
+    limited = rows[: args.limit]
+    print(
+        json.dumps(
+            {
+                "total": len(rows),
+                "results": [
+                    {
+                        "asset_key": str(row["asset_key"]),
+                        "memory_class": str(row["memory_class"]),
+                        "update_target": str(row["update_target"]),
+                        "scope": str(row["scope"]),
+                        "force": str(row["force"]),
+                        "confidence": str(row["confidence"]),
+                        "lifecycle": str(row["lifecycle"]),
+                        "learning_state_visibility": str(row["learning_state_visibility"]),
+                    }
+                    for row in limited
+                ],
+            },
+            ensure_ascii=False,
+        )
+    )
+
+
 def cmd_judge_retry_failed_materializations(args: argparse.Namespace) -> None:
     """Requeue repairable materialization records."""
     from kb_mcp.events.worker import retry_failed_materializations
@@ -983,6 +1013,8 @@ def build_parser() -> argparse.ArgumentParser:
     judge_materialize_parser = judge_sub.add_parser("materialize", help="Enqueue materialization for reviewed candidates")
     judge_materialize_parser.add_argument("--candidate-key")
     judge_materialize_parser.add_argument("--limit", type=int, default=50)
+    judge_learning_state_parser = judge_sub.add_parser("learning-state", help="Show learning asset visibility state")
+    judge_learning_state_parser.add_argument("--limit", type=int, default=50)
     judge_retry_parser = judge_sub.add_parser("retry-failed-materializations", help="Requeue repairable materializations")
     judge_retry_parser.add_argument("--limit", type=int, default=50)
 
@@ -1035,6 +1067,8 @@ def main() -> None:
             cmd_judge_relabel(args)
         elif args.judge_command == "materialize":
             cmd_judge_materialize(args)
+        elif args.judge_command == "learning-state":
+            cmd_judge_learning_state(args)
         elif args.judge_command == "retry-failed-materializations":
             cmd_judge_retry_failed_materializations(args)
         else:

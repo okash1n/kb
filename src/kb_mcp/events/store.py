@@ -1687,6 +1687,26 @@ class EventStore:
             "applications": int(application_row["count"]),
         }
 
+    def learning_visibility_counts(self) -> dict[str, int]:
+        with schema_locked_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT learning_state_visibility, COUNT(*) AS count
+                FROM learning_assets
+                GROUP BY learning_state_visibility
+                """
+            ).fetchall()
+        counts = {str(row["learning_state_visibility"]): int(row["count"]) for row in rows}
+        return {
+            "candidate": counts.get("candidate", 0),
+            "active": counts.get("active", 0),
+            "held": counts.get("held", 0),
+            "retractable": counts.get("retractable", 0),
+            "superseded": counts.get("superseded", 0),
+            "retracted": counts.get("retracted", 0),
+            "expired": counts.get("expired", 0),
+        }
+
     def materialization_counts(self) -> dict[str, int]:
         with schema_locked_connection() as conn:
             total_row = conn.execute(

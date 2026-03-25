@@ -7,6 +7,16 @@
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-03-26
+
+### Added
+
+- `kb-mcp judge learning-state` を追加し、governed runtime learning asset の visibility と主要属性を CLI から確認できるようにした
+
+### Changed
+
+- `doctor` に learning asset / packet / application と visibility 別件数の表示を追加し、runtime learning state の観測性を改善した
+
 ## [0.11.0] - 2026-03-26
 
 ### Added
