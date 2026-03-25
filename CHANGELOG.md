@@ -7,6 +7,17 @@
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-03-26
+
+### Added
+
+- `kb-mcp judge promote-scopes` を追加し、active project-local learning asset を wider scope へ deterministic に昇格できるようにした
+- `scope_promotion` を追加し、`project_local -> user_global` / `project_local -> general` の narrow-first rule を first-class にした
+
+### Changed
+
+- resolver は `distribution_allowed` / `secrecy_boundary` metadata を見て wide scope asset の配布可否を強制するようにした
+
 ## [0.13.0] - 2026-03-26
 
 ### Added
