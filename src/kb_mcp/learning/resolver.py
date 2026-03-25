@@ -68,6 +68,8 @@ def _matches_scope(
 ) -> bool:
     if asset.lifecycle not in _APPLICABLE_LIFECYCLES:
         return False
+    if not _distribution_allows(asset):
+        return False
     provenance = asset.provenance
     if asset.scope == "session_local":
         return bool(request.session_id) and provenance.get("session_id") == request.session_id
@@ -78,6 +80,20 @@ def _matches_scope(
     if asset.scope in {"user_global", "general"}:
         return True
     return False
+
+
+def _distribution_allows(asset: LearningAssetView) -> bool:
+    if asset.scope in {"session_local", "client_local", "project_local"}:
+        return True
+    distribution_allowed = asset.traceability.get("distribution_allowed")
+    if distribution_allowed is False:
+        return False
+    secrecy_boundary = asset.traceability.get("secrecy_boundary")
+    if asset.scope == "user_global":
+        return secrecy_boundary in {None, "user", "general"}
+    if asset.scope == "general":
+        return secrecy_boundary in {None, "general"}
+    return True
 
 
 def _row_to_view(row: object) -> LearningAssetView:

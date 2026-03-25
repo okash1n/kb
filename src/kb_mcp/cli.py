@@ -845,6 +845,12 @@ def cmd_judge_build_policy_snapshots(_args: argparse.Namespace) -> None:
     print(json.dumps(build_policy_snapshots(), ensure_ascii=False))
 
 
+def cmd_judge_promote_scopes(_args: argparse.Namespace) -> None:
+    from kb_mcp.learning.scope_promotion import promote_learning_scopes
+
+    print(json.dumps(promote_learning_scopes(), ensure_ascii=False))
+
+
 def cmd_judge_retry_failed_materializations(args: argparse.Namespace) -> None:
     """Requeue repairable materialization records."""
     from kb_mcp.events.worker import retry_failed_materializations
@@ -1081,6 +1087,7 @@ def build_parser() -> argparse.ArgumentParser:
     judge_expire_learning_parser.add_argument("--actor", default="operator")
     judge_expire_learning_parser.add_argument("--limit", type=int, default=100)
     judge_sub.add_parser("build-policy-snapshots", help="Build runtime policy snapshots from active learning assets")
+    judge_sub.add_parser("promote-scopes", help="Promote active project-local learning assets into wider scopes")
     judge_retry_parser = judge_sub.add_parser("retry-failed-materializations", help="Requeue repairable materializations")
     judge_retry_parser.add_argument("--limit", type=int, default=50)
 
@@ -1143,6 +1150,8 @@ def main() -> None:
             cmd_judge_expire_learning(args)
         elif args.judge_command == "build-policy-snapshots":
             cmd_judge_build_policy_snapshots(args)
+        elif args.judge_command == "promote-scopes":
+            cmd_judge_promote_scopes(args)
         elif args.judge_command == "retry-failed-materializations":
             cmd_judge_retry_failed_materializations(args)
         else:
