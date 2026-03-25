@@ -10,7 +10,7 @@ from pathlib import Path
 from kb_mcp.config import runtime_events_db_path, runtime_events_dir
 from kb_mcp.events.learning_contract import default_backfilled_asset_fields
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 _PROMOTION_CANDIDATES_TABLE_SQL = """
     CREATE TABLE IF NOT EXISTS promotion_candidates (
@@ -54,6 +54,48 @@ _LEARNING_ASSETS_TABLE_SQL = """
       source_status TEXT NOT NULL,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
+    )
+"""
+
+_LEARNING_PACKETS_TABLE_SQL = """
+    CREATE TABLE IF NOT EXISTS learning_packets (
+      packet_id TEXT PRIMARY KEY,
+      source_tool TEXT NOT NULL,
+      source_client TEXT NOT NULL,
+      tool_name TEXT NOT NULL,
+      session_id TEXT,
+      project TEXT,
+      repo TEXT,
+      cwd TEXT,
+      asset_count INTEGER NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('active', 'invalidated')),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+"""
+
+_LEARNING_PACKET_ASSETS_TABLE_SQL = """
+    CREATE TABLE IF NOT EXISTS learning_packet_assets (
+      packet_id TEXT NOT NULL REFERENCES learning_packets(packet_id),
+      asset_key TEXT NOT NULL REFERENCES learning_assets(asset_key),
+      packet_order INTEGER NOT NULL,
+      PRIMARY KEY (packet_id, asset_key)
+    )
+"""
+
+_LEARNING_APPLICATIONS_TABLE_SQL = """
+    CREATE TABLE IF NOT EXISTS learning_applications (
+      application_id TEXT PRIMARY KEY,
+      packet_id TEXT NOT NULL REFERENCES learning_packets(packet_id),
+      tool_name TEXT NOT NULL,
+      tool_call_id TEXT NOT NULL,
+      source_tool TEXT NOT NULL,
+      source_client TEXT NOT NULL,
+      session_id TEXT,
+      save_request_id TEXT,
+      saved_note_id TEXT,
+      saved_note_path TEXT,
+      created_at TEXT NOT NULL
     )
 """
 
@@ -253,6 +295,9 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute(ddl)
     _ensure_relabeled_candidate_status(conn)
     conn.execute(_LEARNING_ASSETS_TABLE_SQL)
+    conn.execute(_LEARNING_PACKETS_TABLE_SQL)
+    conn.execute(_LEARNING_PACKET_ASSETS_TABLE_SQL)
+    conn.execute(_LEARNING_APPLICATIONS_TABLE_SQL)
     _backfill_learning_assets(conn)
     conn.execute(
         "INSERT INTO schema_meta(key, value) VALUES('schema_version', ?) "

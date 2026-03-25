@@ -1596,6 +1596,97 @@ class EventStore:
             "observed": by_lifecycle.get("observed", 0),
         }
 
+    def create_learning_packet(
+        self,
+        *,
+        packet_id: str,
+        source_tool: str,
+        source_client: str,
+        tool_name: str,
+        session_id: str | None,
+        project: str | None,
+        repo: str | None,
+        cwd: str | None,
+        asset_keys: list[str],
+    ) -> None:
+        now = _store_now_iso()
+        with self.transaction() as conn:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO learning_packets(
+                  packet_id, source_tool, source_client, tool_name, session_id,
+                  project, repo, cwd, asset_count, status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+                """,
+                (
+                    packet_id,
+                    source_tool,
+                    source_client,
+                    tool_name,
+                    session_id,
+                    project,
+                    repo,
+                    cwd,
+                    len(asset_keys),
+                    now,
+                    now,
+                ),
+            )
+            for index, asset_key in enumerate(asset_keys, start=1):
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO learning_packet_assets(packet_id, asset_key, packet_order)
+                    VALUES (?, ?, ?)
+                    """,
+                    (packet_id, asset_key, index),
+                )
+
+    def record_learning_application(
+        self,
+        *,
+        application_id: str,
+        packet_id: str,
+        tool_name: str,
+        tool_call_id: str,
+        source_tool: str,
+        source_client: str,
+        session_id: str | None,
+        save_request_id: str | None,
+        saved_note_id: str | None,
+        saved_note_path: str | None,
+    ) -> None:
+        with self.transaction() as conn:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO learning_applications(
+                  application_id, packet_id, tool_name, tool_call_id, source_tool, source_client,
+                  session_id, save_request_id, saved_note_id, saved_note_path, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    application_id,
+                    packet_id,
+                    tool_name,
+                    tool_call_id,
+                    source_tool,
+                    source_client,
+                    session_id,
+                    save_request_id,
+                    saved_note_id,
+                    saved_note_path,
+                    _store_now_iso(),
+                ),
+            )
+
+    def learning_packet_counts(self) -> dict[str, int]:
+        with schema_locked_connection() as conn:
+            packet_row = conn.execute("SELECT COUNT(*) AS count FROM learning_packets").fetchone()
+            application_row = conn.execute("SELECT COUNT(*) AS count FROM learning_applications").fetchone()
+        return {
+            "packets": int(packet_row["count"]),
+            "applications": int(application_row["count"]),
+        }
+
     def materialization_counts(self) -> dict[str, int]:
         with schema_locked_connection() as conn:
             total_row = conn.execute(
