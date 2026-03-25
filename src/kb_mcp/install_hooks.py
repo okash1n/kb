@@ -34,47 +34,57 @@ def copilot_home() -> Path:
     return _copilot_home()
 
 
-def write_wrapper_script(*, name: str, kb_mcp_path: str, tool: str, client: str) -> Path:
+def write_wrapper_script(
+    *,
+    name: str,
+    kb_mcp_path: str,
+    tool: str,
+    client: str,
+    suppress_stdout: bool = False,
+) -> Path:
     """Generate a versioned wrapper script around hook dispatch."""
     hooks_dir = hooks_lib_dir()
     hooks_dir.mkdir(parents=True, exist_ok=True)
     script = hooks_dir / f"{name}.sh"
-    script.write_text(
-        "\n".join(
-            [
-                "#!/usr/bin/env bash",
-                "set -euo pipefail",
-                'RAW_INPUT=""',
-                'if [[ ! -t 0 ]]; then',
-                '  RAW_INPUT="$(cat)"',
-                "fi",
-                'PAYLOAD="$(RAW_INPUT="${RAW_INPUT}" python3 - <<\'PY\'',
-                "import json",
-                "import os",
-                "",
-                'raw = os.environ.get("RAW_INPUT", "").strip()',
-                "payload = {}",
-                "if raw:",
-                "    try:",
-                "        payload = json.loads(raw)",
-                "    except json.JSONDecodeError:",
-                '        payload = {"content": raw}',
-                "payload.setdefault('summary', os.environ.get('SUMMARY') or 'session ended')",
-                "payload.setdefault('content', os.environ.get('CONTENT') or '')",
-                "payload.setdefault('project', os.environ.get('PROJECT') or None)",
-                "payload.setdefault('repo', os.environ.get('REPO') or None)",
-                "payload.setdefault('cwd', os.environ.get('KB_CWD') or os.getcwd())",
-                "payload.setdefault('session_id', os.environ.get('KB_VENDOR_SESSION_ID') or None)",
-                "payload.setdefault('correlation_id', os.environ.get('KB_SESSION_CORRELATION_ID') or None)",
-                "print(json.dumps(payload, ensure_ascii=False))",
-                "PY",
-                ')"',
-                f'printf "%s" "${{PAYLOAD}}" | "{kb_mcp_path}" hook dispatch --tool {tool} --client {client} --layer client_hook --event session_ended --run-worker',
-                "",
-            ]
-        ),
-        encoding="utf-8",
+    dispatch_command = (
+        f'printf "%s" "${{PAYLOAD}}" | "{kb_mcp_path}" hook dispatch '
+        f"--tool {tool} --client {client} --layer client_hook --event session_ended --run-worker"
     )
+    if suppress_stdout:
+        dispatch_command += " >/dev/null"
+
+    lines = [
+        "#!/usr/bin/env bash",
+        "set -euo pipefail",
+        'RAW_INPUT=""',
+        'if [[ ! -t 0 ]]; then',
+        '  RAW_INPUT="$(cat)"',
+        "fi",
+        'PAYLOAD="$(RAW_INPUT="${RAW_INPUT}" python3 - <<\'PY\'',
+        "import json",
+        "import os",
+        "",
+        'raw = os.environ.get("RAW_INPUT", "").strip()',
+        "payload = {}",
+        "if raw:",
+        "    try:",
+        "        payload = json.loads(raw)",
+        "    except json.JSONDecodeError:",
+        '        payload = {"content": raw}',
+        "payload.setdefault('summary', payload.get('last_assistant_message') or payload.get('message') or os.environ.get('SUMMARY') or 'session ended')",
+        "payload.setdefault('content', os.environ.get('CONTENT') or '')",
+        "payload.setdefault('project', os.environ.get('PROJECT') or None)",
+        "payload.setdefault('repo', os.environ.get('REPO') or None)",
+        "payload.setdefault('cwd', os.environ.get('KB_CWD') or os.getcwd())",
+        "payload.setdefault('session_id', os.environ.get('KB_VENDOR_SESSION_ID') or None)",
+        "payload.setdefault('correlation_id', os.environ.get('KB_SESSION_CORRELATION_ID') or None)",
+        "print(json.dumps(payload, ensure_ascii=False))",
+        "PY",
+        ')"',
+        dispatch_command,
+        "",
+    ]
+    script.write_text("\n".join(lines), encoding="utf-8")
     script.chmod(0o755)
     return script
 
@@ -94,6 +104,60 @@ def _merge_json_file(path: Path, transform) -> None:
     updated = transform(data)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(updated, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def inspect_codex_hook_state() -> dict[str, object]:
+    """Return the current Codex hook/config state."""
+    home = codex_home()
+    hooks_path = (home / "hooks.json") if home else Path("~/.codex/hooks.json")
+    config_path = (home / "config.toml") if home else Path("~/.codex/config.toml")
+
+    hooks_exists = hooks_path.exists() if home else False
+    hooks_unreadable = False
+    hook_registered = False
+    if hooks_exists:
+        try:
+            hooks_data = json.loads(hooks_path.read_text(encoding="utf-8"))
+            stop_groups = hooks_data.get("hooks", {}).get("Stop", [])
+            commands: list[str] = []
+            for group in stop_groups:
+                if not isinstance(group, dict):
+                    continue
+                for item in group.get("hooks", []):
+                    if isinstance(item, dict):
+                        commands.append(item.get("command", ""))
+            if not commands:
+                stop_hooks = hooks_data.get("Stop", [])
+                commands.extend(
+                    item.get("command", "")
+                    for item in stop_hooks
+                    if isinstance(item, dict)
+                )
+            hook_registered = any("codex-session-end.sh" in command for command in commands)
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            hooks_unreadable = True
+
+    config_exists = config_path.exists() if home else False
+    config_unreadable = False
+    feature_enabled = False
+    if config_exists:
+        try:
+            config_text = config_path.read_text(encoding="utf-8")
+            feature_enabled = "codex_hooks = true" in config_text
+        except OSError:
+            config_unreadable = True
+
+    return {
+        "home": home,
+        "hooks_path": hooks_path,
+        "hooks_exists": hooks_exists,
+        "hooks_unreadable": hooks_unreadable,
+        "hook_registered": hook_registered,
+        "config_path": config_path,
+        "config_exists": config_exists,
+        "config_unreadable": config_unreadable,
+        "feature_enabled": feature_enabled,
+    }
 
 
 def install_claude(*, execute: bool) -> str:
@@ -183,11 +247,60 @@ def install_codex(*, execute: bool) -> str:
         kb_mcp_path=kb_mcp_path,
         tool="codex",
         client="codex-cli",
+        suppress_stdout=True,
     )
-    snippet = {"Stop": [{"command": str(wrapper)}]}
+    state = inspect_codex_hook_state()
+    hooks_path = state["hooks_path"]
+    config_path = state["config_path"]
+    snippet = {
+        "hooks": {
+            "Stop": [
+                {
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": str(wrapper),
+                        }
+                    ]
+                }
+            ]
+        }
+    }
+
+    hook_status = "installed" if state["hook_registered"] else "missing"
+    if state["hooks_unreadable"]:
+        hook_status = "unreadable"
+    elif not state["hooks_exists"]:
+        hook_status = "not found"
+
+    feature_status = "enabled" if state["feature_enabled"] else "missing"
+    if state["config_unreadable"]:
+        feature_status = "unreadable"
+    elif not state["config_exists"]:
+        feature_status = "not found"
+
+    header = "Codex hook already configured." if state["hook_registered"] else "Codex hook is not auto-installed."
+    status_lines = [
+        header,
+        "Current status:",
+        f"- hooks.json: {hooks_path} ({hook_status})",
+        f"- config.toml: {config_path} (codex_hooks {feature_status})",
+    ]
+    next_steps = [
+        "Next step:",
+        f"1. Edit: {hooks_path}",
+        "2. Ensure Stop includes this JSON:",
+        json.dumps(snippet, ensure_ascii=False, indent=2),
+        "",
+        f"3. If your Codex build requires it, confirm {config_path} contains:",
+        "[features]",
+        "codex_hooks = true",
+    ]
     if not execute:
-        return json.dumps(snippet, ensure_ascii=False, indent=2)
+        return "\n".join(status_lines + [""] + next_steps)
     path = runtime_dir() / "codex-hooks.json.example"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(snippet, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    return f"Codex hook snippet written: {path} (manual apply required)"
+    return "\n".join(
+        [f"Codex hook snippet written: {path}", ""] + status_lines + [""] + next_steps
+    )
