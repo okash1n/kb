@@ -6,6 +6,7 @@ from typing import Any
 
 from kb_mcp.events.identity import (
     compact_logical_key,
+    checkpoint_partition_key,
     correlation_id_for_session,
     error_logical_key,
     session_logical_key,
@@ -26,7 +27,7 @@ from kb_mcp.events.types import (
 from kb_mcp.note import generate_ulid
 
 ALLOW_TOOLS = {"claude", "copilot", "codex", "kb"}
-ALLOW_LAYERS = {"client_hook", "session_launcher", "server_middleware"}
+ALLOW_LAYERS = {"client_hook", "session_launcher", "server_middleware", "recovery_sweeper", "transcript_fallback"}
 
 
 def _management_mode(layer: str, session_id: str | None) -> str:
@@ -77,6 +78,8 @@ def normalize_event(
     occurred_at = payload.get("occurred_at") or received_at
     correlation_id = correlation_id_for_session(tool, client, session_id)
     management_mode = _management_mode(layer, session_id)
+    partition_key: str | None = None
+    ordinal: int | None = None
 
     if event in SESSION_EVENTS:
         aggregate_type = "session"
@@ -99,11 +102,28 @@ def normalize_event(
         )
     elif event in COMPACT_EVENTS:
         aggregate_type = "compact"
+        partition_key = checkpoint_partition_key(
+            correlation_id,
+            source_tool=tool,
+            source_client=client,
+            cwd=payload.get("cwd"),
+            transcript_path=transcript_path,
+            occurred_at=occurred_at,
+        )
         ordinal = int(payload.get("ordinal") or payload.get("sequence") or 1)
-        logical_key = compact_logical_key(correlation_id, ordinal)
+        logical_key = compact_logical_key(partition_key, ordinal)
     elif event in CHECKPOINT_EVENTS:
         aggregate_type = "compact"
-        logical_key = compact_logical_key(correlation_id, 1)
+        partition_key = checkpoint_partition_key(
+            correlation_id,
+            source_tool=tool,
+            source_client=client,
+            cwd=payload.get("cwd"),
+            transcript_path=transcript_path,
+            occurred_at=occurred_at,
+        )
+        ordinal = int(payload.get("checkpoint_ordinal") or payload.get("ordinal") or 0)
+        logical_key = compact_logical_key(partition_key, ordinal)
     else:  # pragma: no cover
         raise AssertionError(f"Unhandled event: {event}")
 
@@ -113,6 +133,10 @@ def normalize_event(
         "exit_code": payload.get("exit_code"),
         "signal": payload.get("signal"),
         "reason": payload.get("reason"),
+        "checkpoint_kind": payload.get("checkpoint_kind") or "turn",
+        "final_hint": bool(payload.get("final_hint", False)),
+        "checkpoint_partition_key": partition_key if event in (CHECKPOINT_EVENTS | COMPACT_EVENTS) else None,
+        "checkpoint_ordinal": ordinal if event in (CHECKPOINT_EVENTS | COMPACT_EVENTS) and ordinal else None,
     }
     return EventEnvelope(
         event_id=generate_ulid(),

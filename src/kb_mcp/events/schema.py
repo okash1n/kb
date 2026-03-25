@@ -8,7 +8,7 @@ from pathlib import Path
 
 from kb_mcp.config import runtime_events_db_path, runtime_events_dir
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 DDL = [
     """
@@ -101,6 +101,12 @@ DDL = [
       details_json TEXT NOT NULL,
       expires_at TEXT,
       updated_at TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS checkpoint_sequences (
+      partition_key TEXT PRIMARY KEY,
+      next_ordinal INTEGER NOT NULL
     )
     """,
 ]

@@ -10,6 +10,7 @@ from pathlib import Path
 import yaml
 
 from kb_mcp.config import load_config
+from kb_mcp.events.candidates import detect_candidates
 from kb_mcp.events.middleware import with_tool_events
 from kb_mcp.events.normalize import normalize_event
 from kb_mcp.events.store import EventStore
@@ -80,6 +81,96 @@ class EventPipelineTest(unittest.TestCase):
         self.assertEqual(len(files), 0)
         checkpoints = sorted((self.config_dir / "runtime" / "events" / "checkpoints").glob("*.json"))
         self.assertEqual(len(checkpoints), 1)
+
+    def test_checkpoint_events_accumulate_multiple_ordinals(self) -> None:
+        store = EventStore()
+        base = {
+            "project": self.project,
+            "cwd": str(self.vault),
+            "session_id": "session-many",
+            "summary": "Turn finished",
+            "content": "Short turn excerpt",
+        }
+        first = normalize_event(tool="codex", client="codex-cli", layer="client_hook", event="turn_checkpointed", payload=base)
+        second = normalize_event(tool="codex", client="codex-cli", layer="client_hook", event="turn_checkpointed", payload=base)
+        result1 = store.append(first)
+        result2 = store.append(second)
+        self.assertNotEqual(result1.logical_key, result2.logical_key)
+        self.assertTrue(result1.logical_key.endswith(":1"))
+        self.assertTrue(result2.logical_key.endswith(":2"))
+        with EventStore().transaction() as conn:
+            keys = [
+                row["logical_key"]
+                for row in conn.execute(
+                    "SELECT logical_key FROM events WHERE summary='Turn finished' ORDER BY rowid"
+                ).fetchall()
+            ]
+        self.assertEqual(keys[-2:], [result1.logical_key, result2.logical_key])
+
+    def test_unmanaged_checkpoint_uses_distinct_partition_key(self) -> None:
+        one = normalize_event(
+            tool="codex",
+            client="codex-cli",
+            layer="client_hook",
+            event="turn_checkpointed",
+            payload={"cwd": "/tmp/a", "summary": "one", "occurred_at": "2026-03-25T00:00:00+00:00"},
+        )
+        two = normalize_event(
+            tool="codex",
+            client="codex-cli",
+            layer="client_hook",
+            event="turn_checkpointed",
+            payload={"cwd": "/tmp/b", "summary": "two", "occurred_at": "2026-03-25T00:00:00+00:00"},
+        )
+        self.assertNotEqual(
+            one.aggregate_state["checkpoint_partition_key"],
+            two.aggregate_state["checkpoint_partition_key"],
+        )
+        store = EventStore()
+        result_one = store.append(one)
+        result_two = store.append(two)
+        self.assertNotEqual(result_one.logical_key, result_two.logical_key)
+
+    def test_unmanaged_compact_events_do_not_collapse_to_single_key(self) -> None:
+        one = normalize_event(
+            tool="codex",
+            client="codex-cli",
+            layer="client_hook",
+            event="compact_finished",
+            payload={"cwd": "/tmp/a", "summary": "one", "occurred_at": "2026-03-25T00:00:00+00:00"},
+        )
+        two = normalize_event(
+            tool="codex",
+            client="codex-cli",
+            layer="client_hook",
+            event="compact_finished",
+            payload={"cwd": "/tmp/b", "summary": "two", "occurred_at": "2026-03-25T00:00:00+00:00"},
+        )
+        self.assertNotEqual(one.logical_key, two.logical_key)
+
+    def test_gap_candidate_is_embedded_in_checkpoint(self) -> None:
+        store = EventStore()
+        payload = {
+            "project": self.project,
+            "cwd": str(self.vault),
+            "session_id": "session-gap",
+            "summary": "長すぎて読まれへんわ",
+            "content": "そうじゃなくて、もっと短く出すべきや",
+        }
+        store.append(normalize_event(tool="codex", client="codex-cli", layer="client_hook", event="turn_checkpointed", payload=payload))
+        run_once(maintenance=True)
+        checkpoints = sorted((self.config_dir / "runtime" / "events" / "checkpoints").glob("*.json"))
+        data = json.loads(checkpoints[0].read_text(encoding="utf-8"))
+        self.assertTrue(data["candidates"]["has_candidates"])
+        self.assertEqual(data["candidates"]["items"][0]["kind"], "gap")
+
+    def test_knowledge_candidate_requires_stronger_signal(self) -> None:
+        detected = detect_candidates(
+            "原因は schema 上の制約や",
+            "config.toml で feature が必要やと確認できた",
+        )
+        self.assertTrue(detected["has_candidates"])
+        self.assertEqual(detected["items"][0]["kind"], "knowledge")
 
     def test_error_event_writes_incident_draft(self) -> None:
         store = EventStore()

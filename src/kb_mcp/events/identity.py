@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import datetime, timezone
 
 
 def _sha256_hex(text: str) -> str:
@@ -46,10 +47,47 @@ def error_logical_key(
     return f"error:standalone:{source_tool}:{source_client}:{error_fingerprint}"
 
 
-def compact_logical_key(correlation_id: str | None, ordinal: int) -> str:
-    if not correlation_id:
-        return f"compact:standalone:{ordinal}"
-    return f"compact:{correlation_id}:{ordinal}"
+def checkpoint_partition_key(
+    correlation_id: str | None,
+    *,
+    source_tool: str,
+    source_client: str,
+    cwd: str | None,
+    transcript_path: str | None,
+    occurred_at: str | None,
+) -> str:
+    if correlation_id:
+        return correlation_id
+    bucket = _occurred_at_bucket(occurred_at)
+    digest = _sha256_hex(
+        "\x1f".join(
+            [
+                source_tool,
+                source_client,
+                cwd or "",
+                transcript_path or "",
+                bucket,
+            ]
+        )
+    )
+    return f"standalone:{digest}"
+
+
+def compact_logical_key(partition_key: str, ordinal: int) -> str:
+    return f"compact:{partition_key}:{ordinal}"
+
+
+def _occurred_at_bucket(occurred_at: str | None) -> str:
+    if not occurred_at:
+        return "unknown"
+    try:
+        dt = datetime.fromisoformat(occurred_at.replace("Z", "+00:00"))
+    except ValueError:
+        return "unknown"
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    utc = dt.astimezone(timezone.utc)
+    return utc.strftime("%Y%m%d%H")
 
 
 def sink_receipt(sink_name: str, logical_key: str, aggregate_version: int) -> str:
