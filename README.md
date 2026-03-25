@@ -123,6 +123,7 @@ kb-mcp doctor
 |---|---|
 | `kb-mcp setup` | 初期設定（Vault パス、タイムゾーン） |
 | `kb-mcp serve` | MCP サーバー起動 |
+| `kb-mcp version` | 現在の `kb-mcp` バージョン表示 |
 | `kb-mcp config get <key>` | 設定値取得 |
 | `kb-mcp install hooks` | lifecycle hook の wrapper / snippet 生成 |
 | `kb-mcp hook dispatch` | raw hook payload を durable event として取り込む |
@@ -131,6 +132,12 @@ kb-mcp doctor
 | `kb-mcp worker cleanup-runtime` | 古い runtime artifact を削除する |
 | `kb-mcp session run` | launcher 管理下で AI セッションを起動する |
 | `kb-mcp doctor` | config, event DB, scheduler, hooks を診断する |
+
+バージョン確認:
+```bash
+kb-mcp --version
+kb-mcp version
+```
 
 ## Hooks / Events
 
