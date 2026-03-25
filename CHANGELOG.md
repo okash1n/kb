@@ -11,6 +11,17 @@
 
 - まだ未整理
 
+## [0.4.2] - 2026-03-25
+
+### Fixed
+
+- Codex / Claude / Copilot の Stop 相当 hook を `session_ended` ではなく checkpoint 系イベントとして扱うように修正
+- Stop ごとに session-log が増えていた問題を修正し、launcher 管理の本当の session 終了時だけ session-log を作るように変更
+
+### Changed
+
+- hook pipeline 内の event semantics を整理し、turn 単位の保存は checkpoint に寄せた
+
 ## [0.4.1] - 2026-03-25
 
 ### Fixed

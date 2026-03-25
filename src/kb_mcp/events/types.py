@@ -27,7 +27,8 @@ SESSION_EVENTS = {
 TOOL_EVENTS = {"tool_started", "tool_succeeded", "tool_failed"}
 ERROR_EVENTS = {"agent_error"}
 COMPACT_EVENTS = {"compact_started", "compact_finished"}
-KNOWN_EVENTS = SESSION_EVENTS | TOOL_EVENTS | ERROR_EVENTS | COMPACT_EVENTS
+CHECKPOINT_EVENTS = {"turn_checkpointed"}
+KNOWN_EVENTS = SESSION_EVENTS | TOOL_EVENTS | ERROR_EVENTS | COMPACT_EVENTS | CHECKPOINT_EVENTS
 
 
 def utc_now_iso() -> str:
