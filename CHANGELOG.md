@@ -7,6 +7,13 @@
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-03-26
+
+### Added
+
+- learning packet / packet asset / application trace の runtime table を追加した
+- middleware request path で applicable learning asset から packet を作り、tool apply trace を永続化するようにした
+
 ## [0.10.0] - 2026-03-26
 
 ### Added
