@@ -397,7 +397,7 @@ class EventPipelineTest(unittest.TestCase):
         self.assertEqual(removed["checkpoints"], 1)
         self.assertFalse(old_file.exists())
 
-    def test_schema_version_4_creates_review_and_materialization_tables(self) -> None:
+    def test_schema_version_5_creates_learning_asset_table(self) -> None:
         with EventStore().transaction() as conn:
             version = conn.execute(
                 "SELECT value FROM schema_meta WHERE key='schema_version'"
@@ -408,7 +408,7 @@ class EventPipelineTest(unittest.TestCase):
                     "SELECT name FROM sqlite_master WHERE type='table'"
                 ).fetchall()
             }
-        self.assertEqual(version["value"], "4")
+        self.assertEqual(version["value"], "5")
         self.assertTrue(
             {
                 "judge_runs",
@@ -416,6 +416,7 @@ class EventPipelineTest(unittest.TestCase):
                 "candidate_reviews",
                 "materialization_records",
                 "note_mutations",
+                "learning_assets",
             }
             <= tables
         )
@@ -542,12 +543,102 @@ class EventPipelineTest(unittest.TestCase):
                 row["name"]
                 for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
             }
-        self.assertEqual(version["value"], "4")
+        self.assertEqual(version["value"], "5")
         self.assertEqual(judge["judge_run_key"], "legacy-judge")
         self.assertEqual(candidate["candidate_key"], "legacy-candidate")
         self.assertEqual(review["review_id"], "legacy-review")
         self.assertIn("materialization_records", tables)
         self.assertIn("note_mutations", tables)
+        self.assertIn("learning_assets", tables)
+        with schema_locked_connection() as conn:
+            asset = conn.execute(
+                """
+                SELECT memory_class, update_target, scope, confidence, lifecycle, learning_state_visibility
+                FROM learning_assets
+                WHERE candidate_key='legacy-candidate'
+                """
+            ).fetchone()
+        self.assertIsNotNone(asset)
+        self.assertEqual(asset["memory_class"], "gap")
+        self.assertEqual(asset["update_target"], "behavior_style")
+        self.assertEqual(asset["scope"], "project_local")
+        self.assertEqual(asset["confidence"], "reviewed")
+        self.assertEqual(asset["lifecycle"], "candidate")
+        self.assertEqual(asset["learning_state_visibility"], "candidate")
+
+    def test_schema_backfill_learning_assets_is_idempotent(self) -> None:
+        store = EventStore()
+        store.upsert_judge_run(
+            judge_run_key="judge-backfill",
+            partition_key="partition-backfill",
+            window_id="window-backfill",
+            start_ordinal=1,
+            end_ordinal=1,
+            window_index=1,
+            status="judged",
+            prompt_version="v1",
+        )
+        store.upsert_promotion_candidate(
+            candidate_key="candidate-backfill",
+            window_id="window-backfill",
+            judge_run_key="judge-backfill",
+            label="adr",
+            status="pending_review",
+            score=0.91,
+            slice_fingerprint="window-backfill",
+            reasons=["decision made"],
+            payload={"window_id": "window-backfill"},
+        )
+        review_seq = store.record_candidate_review(
+            review_id="review-backfill",
+            candidate_key="candidate-backfill",
+            window_id="window-backfill",
+            judge_run_key="judge-backfill",
+            ai_labels=[{"label": "adr", "score": 0.91}],
+            ai_score={"adr": 0.91},
+            human_verdict="accepted",
+            human_label=None,
+        )
+        self.assertEqual(review_seq, 1)
+        with store.transaction() as conn:
+            conn.execute(
+                "UPDATE promotion_candidates SET status='accepted' WHERE candidate_key='candidate-backfill'"
+            )
+        with schema_locked_connection() as conn:
+            ensure_schema(conn)
+            ensure_schema(conn)
+            row = conn.execute(
+                "SELECT COUNT(*) AS count FROM learning_assets WHERE candidate_key='candidate-backfill'"
+            ).fetchone()
+        self.assertEqual(int(row["count"]), 1)
+
+    def test_event_store_upserts_learning_asset(self) -> None:
+        store = EventStore()
+        store.upsert_learning_asset(
+            asset_key="learning:test:1:gap:project_local",
+            candidate_key=None,
+            review_id=None,
+            materialization_key=None,
+            note_id=None,
+            note_path=None,
+            memory_class="gap",
+            update_target="behavior_style",
+            scope="project_local",
+            force="hint",
+            confidence="reviewed",
+            lifecycle="candidate",
+            provenance={"candidate_key": "candidate-gap"},
+            traceability={"served": []},
+            revocation_path={"rollback_scope": "project_local"},
+            learning_state_visibility="candidate",
+            source_status="accepted",
+        )
+        row = store.get_learning_asset("learning:test:1:gap:project_local")
+        self.assertIsNotNone(row)
+        self.assertEqual(row["memory_class"], "gap")
+        counts = store.learning_asset_counts()
+        self.assertEqual(counts["total"], 1)
+        self.assertEqual(counts["candidate"], 1)
 
     def test_schema_upgrade_refreshes_candidate_status_check_for_relabeled(self) -> None:
         root = Path(self.tmpdir.name)

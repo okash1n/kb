@@ -19,6 +19,12 @@ _JUDGE_STATUSES = {"ready", "judged", "superseded", "failed"}
 _HUMAN_VERDICTS = {"accepted", "rejected", "relabeled"}
 _MATERIALIZATION_STATUSES = {"planned", "applying", "applied", "repair_pending", "failed", "superseded"}
 _REVIEW_MATERIALIZATION_SINKS = ("promotion_planner", "promotion_applier")
+_LEARNING_MEMORY_CLASSES = {"adr", "gap", "knowledge", "session_thin"}
+_LEARNING_SCOPES = {"session_local", "client_local", "project_local", "user_global", "general"}
+_LEARNING_FORCES = {"hint", "preferred", "default", "guardrail"}
+_LEARNING_CONFIDENCES = {"observed", "candidate", "reviewed", "stable", "stale"}
+_LEARNING_LIFECYCLES = {"observed", "candidate", "active", "superseded", "retracted", "expired"}
+_LEARNING_VISIBILITY = {"candidate", "active", "held", "retractable", "superseded", "retracted", "expired"}
 
 
 def _store_now_iso() -> str:
@@ -1458,6 +1464,127 @@ class EventStore:
                 "SELECT COUNT(*) AS count FROM candidate_reviews"
             ).fetchone()
             return int(row["count"])
+
+    def upsert_learning_asset(
+        self,
+        *,
+        asset_key: str,
+        candidate_key: str | None,
+        review_id: str | None,
+        materialization_key: str | None,
+        note_id: str | None,
+        note_path: str | None,
+        memory_class: str,
+        update_target: str,
+        scope: str,
+        force: str,
+        confidence: str,
+        lifecycle: str,
+        provenance: dict[str, Any],
+        traceability: dict[str, Any],
+        revocation_path: dict[str, Any],
+        learning_state_visibility: str,
+        source_status: str,
+        created_at: str | None = None,
+        updated_at: str | None = None,
+    ) -> None:
+        if memory_class not in _LEARNING_MEMORY_CLASSES:
+            raise ValueError(f"invalid memory_class: {memory_class}")
+        if scope not in _LEARNING_SCOPES:
+            raise ValueError(f"invalid scope: {scope}")
+        if force not in _LEARNING_FORCES:
+            raise ValueError(f"invalid force: {force}")
+        if confidence not in _LEARNING_CONFIDENCES:
+            raise ValueError(f"invalid confidence: {confidence}")
+        if lifecycle not in _LEARNING_LIFECYCLES:
+            raise ValueError(f"invalid lifecycle: {lifecycle}")
+        if learning_state_visibility not in _LEARNING_VISIBILITY:
+            raise ValueError(f"invalid learning_state_visibility: {learning_state_visibility}")
+        created = created_at or _store_now_iso()
+        updated = updated_at or created
+        with self.transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO learning_assets(
+                  asset_key, candidate_key, review_id, materialization_key, note_id, note_path,
+                  memory_class, update_target, scope, force, confidence, lifecycle,
+                  provenance_json, traceability_json, revocation_path_json,
+                  learning_state_visibility, source_status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(asset_key) DO UPDATE SET
+                  candidate_key=excluded.candidate_key,
+                  review_id=COALESCE(excluded.review_id, learning_assets.review_id),
+                  materialization_key=COALESCE(excluded.materialization_key, learning_assets.materialization_key),
+                  note_id=COALESCE(excluded.note_id, learning_assets.note_id),
+                  note_path=COALESCE(excluded.note_path, learning_assets.note_path),
+                  memory_class=excluded.memory_class,
+                  update_target=excluded.update_target,
+                  scope=excluded.scope,
+                  force=excluded.force,
+                  confidence=excluded.confidence,
+                  lifecycle=excluded.lifecycle,
+                  provenance_json=excluded.provenance_json,
+                  traceability_json=excluded.traceability_json,
+                  revocation_path_json=excluded.revocation_path_json,
+                  learning_state_visibility=excluded.learning_state_visibility,
+                  source_status=excluded.source_status,
+                  updated_at=excluded.updated_at
+                """,
+                (
+                    asset_key,
+                    candidate_key,
+                    review_id,
+                    materialization_key,
+                    note_id,
+                    note_path,
+                    memory_class,
+                    update_target,
+                    scope,
+                    force,
+                    confidence,
+                    lifecycle,
+                    json.dumps(provenance, ensure_ascii=False),
+                    json.dumps(traceability, ensure_ascii=False),
+                    json.dumps(revocation_path, ensure_ascii=False),
+                    learning_state_visibility,
+                    source_status,
+                    created,
+                    updated,
+                ),
+            )
+
+    def get_learning_asset(self, asset_key: str) -> sqlite3.Row | None:
+        with schema_locked_connection() as conn:
+            return conn.execute(
+                """
+                SELECT *
+                FROM learning_assets
+                WHERE asset_key=?
+                LIMIT 1
+                """,
+                (asset_key,),
+            ).fetchone()
+
+    def learning_asset_counts(self) -> dict[str, int]:
+        with schema_locked_connection() as conn:
+            total_row = conn.execute("SELECT COUNT(*) AS count FROM learning_assets").fetchone()
+            lifecycle_rows = conn.execute(
+                """
+                SELECT lifecycle, COUNT(*) AS count
+                FROM learning_assets
+                GROUP BY lifecycle
+                """
+            ).fetchall()
+        by_lifecycle = {str(row["lifecycle"]): int(row["count"]) for row in lifecycle_rows}
+        return {
+            "total": int(total_row["count"]),
+            "candidate": by_lifecycle.get("candidate", 0),
+            "active": by_lifecycle.get("active", 0),
+            "superseded": by_lifecycle.get("superseded", 0),
+            "retracted": by_lifecycle.get("retracted", 0),
+            "expired": by_lifecycle.get("expired", 0),
+            "observed": by_lifecycle.get("observed", 0),
+        }
 
     def materialization_counts(self) -> dict[str, int]:
         with schema_locked_connection() as conn:

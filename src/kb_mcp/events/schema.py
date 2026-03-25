@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import sqlite3
+import json
 from contextlib import contextmanager
 from pathlib import Path
 
 from kb_mcp.config import runtime_events_db_path, runtime_events_dir
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 _PROMOTION_CANDIDATES_TABLE_SQL = """
     CREATE TABLE IF NOT EXISTS promotion_candidates (
@@ -24,6 +25,32 @@ _PROMOTION_CANDIDATES_TABLE_SQL = """
       last_suggested_at TEXT,
       suggestion_seq INTEGER NOT NULL DEFAULT 0,
       resolved_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+"""
+
+_LEARNING_ASSETS_TABLE_SQL = """
+    CREATE TABLE IF NOT EXISTS learning_assets (
+      asset_key TEXT PRIMARY KEY,
+      candidate_key TEXT REFERENCES promotion_candidates(candidate_key),
+      review_id TEXT REFERENCES candidate_reviews(review_id),
+      materialization_key TEXT REFERENCES materialization_records(materialization_key),
+      note_id TEXT,
+      note_path TEXT,
+      memory_class TEXT NOT NULL CHECK (memory_class IN ('adr', 'gap', 'knowledge', 'session_thin')),
+      update_target TEXT NOT NULL,
+      scope TEXT NOT NULL CHECK (scope IN ('session_local', 'client_local', 'project_local', 'user_global', 'general')),
+      force TEXT NOT NULL CHECK (force IN ('hint', 'preferred', 'default', 'guardrail')),
+      confidence TEXT NOT NULL CHECK (confidence IN ('observed', 'candidate', 'reviewed', 'stable', 'stale')),
+      lifecycle TEXT NOT NULL CHECK (lifecycle IN ('observed', 'candidate', 'active', 'superseded', 'retracted', 'expired')),
+      provenance_json TEXT NOT NULL,
+      traceability_json TEXT NOT NULL,
+      revocation_path_json TEXT NOT NULL,
+      learning_state_visibility TEXT NOT NULL CHECK (
+        learning_state_visibility IN ('candidate', 'active', 'held', 'retractable', 'superseded', 'retracted', 'expired')
+      ),
+      source_status TEXT NOT NULL,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     )
@@ -224,6 +251,8 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     for ddl in DDL:
         conn.execute(ddl)
     _ensure_relabeled_candidate_status(conn)
+    conn.execute(_LEARNING_ASSETS_TABLE_SQL)
+    _backfill_learning_assets(conn)
     conn.execute(
         "INSERT INTO schema_meta(key, value) VALUES('schema_version', ?) "
         "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -289,6 +318,153 @@ def _ensure_relabeled_candidate_status(conn: sqlite3.Connection) -> None:
             FROM promotion_candidates_old
             """
         )
-        conn.execute("DROP TABLE promotion_candidates_old")
-    finally:
-        conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("DROP TABLE promotion_candidates_old")
+    conn.execute("PRAGMA foreign_keys=ON")
+
+
+def _backfill_learning_assets(conn: sqlite3.Connection) -> None:
+    rows = conn.execute(
+        """
+        WITH latest_reviews AS (
+          SELECT candidate_key, MAX(review_seq) AS max_review_seq
+          FROM candidate_reviews
+          GROUP BY candidate_key
+        ),
+        latest_materializations AS (
+          SELECT candidate_key, MAX(review_seq) AS max_review_seq
+          FROM materialization_records
+          GROUP BY candidate_key
+        )
+        SELECT
+          pc.candidate_key,
+          pc.label AS candidate_label,
+          pc.status AS candidate_status,
+          pc.created_at AS candidate_created_at,
+          pc.updated_at AS candidate_updated_at,
+          cr.review_id,
+          cr.review_seq,
+          cr.human_verdict,
+          cr.human_label,
+          cr.reviewed_at,
+          mr.materialization_key,
+          mr.status AS materialization_status,
+          mr.note_id,
+          mr.note_path,
+          mr.created_at AS materialization_created_at,
+          mr.updated_at AS materialization_updated_at
+        FROM promotion_candidates pc
+        JOIN latest_reviews lr
+          ON lr.candidate_key = pc.candidate_key
+        JOIN candidate_reviews cr
+          ON cr.candidate_key = lr.candidate_key
+         AND cr.review_seq = lr.max_review_seq
+        LEFT JOIN latest_materializations lm
+          ON lm.candidate_key = pc.candidate_key
+        LEFT JOIN materialization_records mr
+          ON mr.candidate_key = lm.candidate_key
+         AND mr.review_seq = lm.max_review_seq
+        WHERE pc.status IN ('accepted', 'relabeled', 'materialized')
+        """
+    ).fetchall()
+    for row in rows:
+        memory_class = str(row["human_label"] or row["candidate_label"])
+        scope = "project_local"
+        asset_key = _learning_asset_key(
+            candidate_key=str(row["candidate_key"]),
+            review_seq=int(row["review_seq"]),
+            memory_class=memory_class,
+            scope=scope,
+        )
+        source_status = str(row["candidate_status"])
+        lifecycle = "active" if source_status == "materialized" else "candidate"
+        confidence = "stable" if source_status == "materialized" else "reviewed"
+        visibility = "active" if source_status == "materialized" else "candidate"
+        created_at = (
+            row["materialization_created_at"]
+            or row["reviewed_at"]
+            or row["candidate_created_at"]
+        )
+        updated_at = (
+            row["materialization_updated_at"]
+            or row["reviewed_at"]
+            or row["candidate_updated_at"]
+        )
+        conn.execute(
+            """
+            INSERT INTO learning_assets(
+              asset_key, candidate_key, review_id, materialization_key, note_id, note_path,
+              memory_class, update_target, scope, force, confidence, lifecycle,
+              provenance_json, traceability_json, revocation_path_json,
+              learning_state_visibility, source_status, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(asset_key) DO UPDATE SET
+              review_id=excluded.review_id,
+              materialization_key=COALESCE(excluded.materialization_key, learning_assets.materialization_key),
+              note_id=COALESCE(excluded.note_id, learning_assets.note_id),
+              note_path=COALESCE(excluded.note_path, learning_assets.note_path),
+              confidence=excluded.confidence,
+              lifecycle=excluded.lifecycle,
+              provenance_json=excluded.provenance_json,
+              traceability_json=excluded.traceability_json,
+              learning_state_visibility=excluded.learning_state_visibility,
+              source_status=excluded.source_status,
+              updated_at=excluded.updated_at
+            """,
+            (
+                asset_key,
+                row["candidate_key"],
+                row["review_id"],
+                row["materialization_key"],
+                row["note_id"],
+                row["note_path"],
+                memory_class,
+                _default_update_target(memory_class),
+                scope,
+                "hint",
+                confidence,
+                lifecycle,
+                _json_dumps(
+                    {
+                        "candidate_key": row["candidate_key"],
+                        "review_id": row["review_id"],
+                        "review_seq": row["review_seq"],
+                        "materialization_key": row["materialization_key"],
+                    }
+                ),
+                _json_dumps(
+                    {
+                        "note_id": row["note_id"],
+                        "note_path": row["note_path"],
+                        "materialization_status": row["materialization_status"],
+                    }
+                ),
+                _json_dumps(
+                    {
+                        "supersede_key": asset_key,
+                        "rollback_scope": scope,
+                    }
+                ),
+                visibility,
+                source_status,
+                created_at,
+                updated_at,
+            ),
+        )
+
+
+def _learning_asset_key(*, candidate_key: str, review_seq: int, memory_class: str, scope: str) -> str:
+    return f"learning:{candidate_key}:{review_seq}:{memory_class}:{scope}"
+
+
+def _default_update_target(memory_class: str) -> str:
+    mapping = {
+        "gap": "behavior_style",
+        "knowledge": "fact_model",
+        "adr": "decision_policy",
+        "session_thin": "session_summary_only",
+    }
+    return mapping.get(memory_class, "behavior_style")
+
+
+def _json_dumps(value: dict[str, object]) -> str:
+    return json.dumps(value, ensure_ascii=False)
