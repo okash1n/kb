@@ -41,6 +41,33 @@ class _StubBackend:
         )
 
 
+class _FailingOnceBackend:
+    def __init__(self) -> None:
+        self._failed = False
+
+    def prompt_version(self) -> str:
+        return "judge-review-candidates.v1"
+
+    def review_window(
+        self,
+        payload: dict[str, object],
+        *,
+        prompt_version: str,
+        model_hint: str | None = None,
+    ):
+        if not self._failed:
+            self._failed = True
+            raise RuntimeError("boom")
+        from kb_mcp.events.judge_backend import JudgeDecision
+
+        return JudgeDecision(
+            labels=[{"label": "adr", "score": 0.9, "reasons": ["agreement"]}],
+            should_emit_thin_session=False,
+            carry_forward=False,
+            notes="recovered",
+        )
+
+
 class JudgeCliTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmpdir = tempfile.TemporaryDirectory()
@@ -141,6 +168,27 @@ class JudgeCliTest(unittest.TestCase):
             ).fetchone()
         self.assertIsNotNone(row)
         self.assertEqual(row["status"], "pending_review")
+
+    def test_review_candidates_continues_after_one_window_failure(self) -> None:
+        self._append_checkpoint_sequence(
+            session_id="session-fail-first",
+            payloads=[{"summary": "これでいこう", "content": "案Bにする", "occurred_at": "2026-03-25T00:00:00+00:00"}],
+        )
+        self._append_checkpoint_sequence(
+            session_id="session-pass-second",
+            payloads=[{"summary": "これでいこう", "content": "案Cにする", "occurred_at": "2026-03-25T00:01:00+00:00"}],
+        )
+
+        result = self._run_review_candidates(
+            backend=_FailingOnceBackend(),
+            limit=10,
+        )
+
+        self.assertEqual(result["failed_windows"], 1)
+        self.assertEqual(result["judged_windows"], 1)
+        with schema_locked_connection() as conn:
+            row = conn.execute("SELECT COUNT(*) AS count FROM promotion_candidates").fetchone()
+        self.assertEqual(int(row["count"]), 1)
 
     def test_review_candidates_marks_suggested_when_threshold_reached(self) -> None:
         for idx in range(5):

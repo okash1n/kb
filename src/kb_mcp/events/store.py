@@ -157,6 +157,44 @@ class EventStore:
                 (key, severity, message, payload, utc_now_iso()),
             )
 
+    def get_runtime_observation(self, key: str) -> sqlite3.Row | None:
+        with schema_locked_connection() as conn:
+            return conn.execute(
+                """
+                SELECT *
+                FROM runtime_observations
+                WHERE observation_key=?
+                LIMIT 1
+                """,
+                (key,),
+            ).fetchone()
+
+    def clear_runtime_observation(self, key: str) -> None:
+        with self.transaction() as conn:
+            conn.execute(
+                "DELETE FROM runtime_observations WHERE observation_key=?",
+                (key,),
+            )
+
+    def list_runtime_observations(
+        self,
+        *,
+        prefix: str,
+        limit: int | None = None,
+    ) -> list[sqlite3.Row]:
+        sql = """
+            SELECT *
+            FROM runtime_observations
+            WHERE observation_key LIKE ?
+            ORDER BY updated_at DESC, observation_key ASC
+        """
+        params: list[Any] = [f"{prefix}%"]
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(limit)
+        with schema_locked_connection() as conn:
+            return conn.execute(sql, tuple(params)).fetchall()
+
     def dead_letter_count(self) -> int:
         with self.transaction() as conn:
             row = conn.execute(

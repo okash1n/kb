@@ -8,6 +8,7 @@ import shutil
 from pathlib import Path
 
 from kb_mcp.config import config_dir, load_config, runtime_events_db_path
+from kb_mcp.events.judge_runner import fastpath_backend_status, fastpath_breaker_status
 from kb_mcp.events.store import EventStore
 from kb_mcp.events.scheduler import scheduler_installed, scheduler_platform
 from kb_mcp.events.schema import SCHEMA_VERSION
@@ -148,6 +149,7 @@ def _runtime_checks() -> list[str]:
     }
     judge_metrics_error = None
     runtime_metrics_error = None
+    fastpath_metrics_error = None
     if runtime_events_db_path().exists():
         try:
             store = EventStore()
@@ -174,12 +176,31 @@ def _runtime_checks() -> list[str]:
             _fmt("Materializations failed", str(materialization_counts["failed"]), materialization_counts["failed"] == 0),
             _fmt("Materializations applying expired", str(materialization_counts["expired_applying"]), materialization_counts["expired_applying"] == 0),
         ]
+    fastpath_backend = fastpath_backend_status()
+    try:
+        fastpath_breakers = (
+            fastpath_breaker_status() if runtime_events_db_path().exists() else {"total": 0, "open": 0}
+        )
+    except sqlite3.Error as exc:
+        fastpath_breakers = {"total": 0, "open": 0}
+        fastpath_metrics_error = exc.__class__.__name__
     return [
         _fmt("Checkpoints", str(checkpoints), True),
         _fmt("Candidates", str(candidates), True),
         _fmt("Promotion plans", str(promotions), True),
         _fmt("Promotion records", str(records), True),
         *materialization_lines,
+        _fmt_info(
+            "Fast-path judge backend",
+            "configured" if fastpath_backend["configured"] else "not configured",
+        ),
+        _fmt(
+            "Fast-path breakers open",
+            str(fastpath_breakers["open"]),
+            fastpath_metrics_error is None and fastpath_breakers["open"] == 0,
+        ),
+        _fmt_info("Fast-path breakers tracked", str(fastpath_breakers["total"])),
+        _fmt("Fast-path breaker metrics", fastpath_metrics_error or "ok", fastpath_metrics_error is None),
         _fmt_info("Judge runs pending", str(judge_counts["ready"])),
         _fmt_info("Review candidates pending", str(pending_reviews)),
         _fmt_info("Candidate reviews", str(review_count)),

@@ -324,6 +324,17 @@ class InstallAndDoctorTest(unittest.TestCase):
         self.assertIn("Runtime metrics: OperationalError ✗", report)
         self.assertIn("Materialization records: OperationalError ✗", report)
         self.assertIn("Materializations repair pending: OperationalError ✗", report)
+        self.assertIn("Fast-path breaker metrics: ok ✓", report)
+
+    @mock.patch("kb_mcp.doctor.fastpath_breaker_status", side_effect=sqlite3.OperationalError("broken"))
+    def test_doctor_handles_fastpath_breaker_metric_query_failure(self, _fastpath_status: mock.Mock) -> None:
+        db_path = runtime_events_db_path()
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        db_path.touch()
+
+        report = run_doctor(no_version_check=True)
+
+        self.assertIn("Fast-path breaker metrics: OperationalError ✗", report)
 
     @mock.patch("shutil.which", return_value="/tmp/kb-mcp")
     def test_install_codex_wrapper_suppresses_stdout(self, _which: mock.Mock) -> None:
