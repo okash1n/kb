@@ -12,11 +12,14 @@
 - judge / candidate / human review 用の review ledger schema と store API を追加
 - partition / ordinal から judge 用 window payload を再構成する `judge_inputs` と deterministic signal extractor を追加
 - `kb-mcp judge review-candidates` と judge backend / runner の初期実装を追加
+- `kb-mcp judge accept` / `reject` / `relabel` を追加し、human review verdict を CLI から記録できるようにした
 
 ### Changed
 
 - event DB schema version を `3` に上げる準備を進めた
 - `topic_shift_candidate` と `knowledge` 補助 signal を cross-client 共通ルールで抽出するようにした
+- `doctor` に judge backlog / review ledger / runtime metric failure の診断を追加した
+- review suggestion を pending backlog 基準に変更し、新規候補流入時の再提示を安定化した
 
 ## [0.5.1] - 2026-03-25
 

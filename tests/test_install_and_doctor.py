@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import json
+import sqlite3
 import subprocess
 import tempfile
 import unittest
@@ -10,7 +11,7 @@ from unittest import mock
 
 import yaml
 
-from kb_mcp.config import load_config
+from kb_mcp.config import load_config, runtime_events_db_path
 from kb_mcp.events.scheduler import scheduler_marker_path
 from kb_mcp.events.store import EventStore
 from kb_mcp.doctor import run_doctor
@@ -165,6 +166,77 @@ class InstallAndDoctorTest(unittest.TestCase):
             )
         report = run_doctor(no_version_check=True)
         self.assertIn("Dead letters: 1 ✗", report)
+
+    def test_doctor_reports_judge_and_review_counts(self) -> None:
+        store = EventStore()
+        store.upsert_judge_run(
+            judge_run_key="judge-1",
+            partition_key="project:demo",
+            window_id="window-1",
+            start_ordinal=1,
+            end_ordinal=2,
+            window_index=1,
+            status="ready",
+            prompt_version="judge-review-candidates.v1",
+            labels=[],
+            decision={},
+        )
+        store.upsert_judge_run(
+            judge_run_key="judge-2",
+            partition_key="project:demo",
+            window_id="window-2",
+            start_ordinal=3,
+            end_ordinal=4,
+            window_index=2,
+            status="failed",
+            prompt_version="judge-review-candidates.v1",
+            labels=[],
+            decision={},
+        )
+        store.upsert_promotion_candidate(
+            candidate_key="candidate-1",
+            window_id="window-1",
+            judge_run_key="judge-1",
+            label="adr",
+            status="pending_review",
+            score=0.9,
+            slice_fingerprint="fp-1",
+            reasons=["agreement"],
+            payload={"window_id": "window-1"},
+        )
+        store.record_candidate_review(
+            review_id="review-1",
+            candidate_key="candidate-1",
+            window_id="window-1",
+            judge_run_key="judge-1",
+            ai_labels=[{"label": "adr", "score": 0.9}],
+            ai_score={"label": "adr", "score": 0.9},
+            human_verdict="accepted",
+            human_label=None,
+        )
+
+        report = run_doctor(no_version_check=True)
+
+        self.assertIn("Judge runs pending: 1", report)
+        self.assertIn("Review candidates pending: 0", report)
+        self.assertIn("Candidate reviews: 1", report)
+        self.assertIn("Judge failures: 1 ✗", report)
+        self.assertIn("Judge metrics: ok ✓", report)
+        self.assertIn("Runtime metrics: ok ✓", report)
+
+    @mock.patch("kb_mcp.doctor.EventStore")
+    def test_doctor_handles_judge_metric_query_failure(self, store_cls: mock.Mock) -> None:
+        db_path = runtime_events_db_path()
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        db_path.touch()
+        store = store_cls.return_value
+        store.dead_letter_count.return_value = 0
+        store.judge_run_counts.side_effect = sqlite3.OperationalError("broken")
+
+        report = run_doctor(no_version_check=True)
+
+        self.assertIn("Judge metrics: OperationalError ✗", report)
+        self.assertIn("Runtime metrics: OperationalError ✗", report)
 
     @mock.patch("shutil.which", return_value="/tmp/kb-mcp")
     def test_install_codex_wrapper_suppresses_stdout(self, _which: mock.Mock) -> None:

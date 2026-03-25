@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from typing import Any
 
 from kb_mcp.events.candidates import detect_candidates
@@ -15,6 +16,10 @@ _CANDIDATE_LABELS = {"adr", "gap", "knowledge", "session_thin"}
 _CANDIDATE_STATUSES = {"pending_review", "accepted", "rejected", "materialized"}
 _JUDGE_STATUSES = {"ready", "judged", "superseded", "failed"}
 _HUMAN_VERDICTS = {"accepted", "rejected", "relabeled"}
+
+
+def _store_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds")
 
 
 class EventStore:
@@ -213,7 +218,7 @@ class EventStore:
     ) -> None:
         if status not in _JUDGE_STATUSES:
             raise ValueError(f"invalid judge status: {status}")
-        now = utc_now_iso()
+        now = _store_now_iso()
         with self.transaction() as conn:
             conn.execute(
                 """
@@ -265,6 +270,18 @@ class EventStore:
                 (window_id, prompt_version),
             ).fetchone()
 
+    def get_judge_run_by_key(self, judge_run_key: str) -> sqlite3.Row | None:
+        with schema_locked_connection() as conn:
+            return conn.execute(
+                """
+                SELECT *
+                FROM judge_runs
+                WHERE judge_run_key=?
+                LIMIT 1
+                """,
+                (judge_run_key,),
+            ).fetchone()
+
     def claim_judge_run(
         self,
         *,
@@ -293,7 +310,7 @@ class EventStore:
                 SET lease_owner=?, lease_expires_at=?, updated_at=?
                 WHERE judge_run_key=?
                 """,
-                (lease_owner, lease_expires_at, utc_now_iso(), row["judge_run_key"]),
+                (lease_owner, lease_expires_at, _store_now_iso(), row["judge_run_key"]),
             )
             return conn.execute(
                 "SELECT * FROM judge_runs WHERE judge_run_key=?",
@@ -314,7 +331,7 @@ class EventStore:
                 SET lease_expires_at=?, updated_at=?
                 WHERE judge_run_key=? AND lease_owner=?
                 """,
-                (lease_expires_at, utc_now_iso(), judge_run_key, lease_owner),
+                (lease_expires_at, _store_now_iso(), judge_run_key, lease_owner),
             )
             return result.rowcount > 0
 
@@ -326,7 +343,7 @@ class EventStore:
                 SET lease_owner=NULL, lease_expires_at=NULL, updated_at=?
                 WHERE judge_run_key=? AND lease_owner=?
                 """,
-                (utc_now_iso(), judge_run_key, lease_owner),
+                (_store_now_iso(), judge_run_key, lease_owner),
             )
             return result.rowcount > 0
 
@@ -347,7 +364,7 @@ class EventStore:
             raise ValueError(f"invalid candidate label: {label}")
         if status not in _CANDIDATE_STATUSES:
             raise ValueError(f"invalid candidate status: {status}")
-        now = utc_now_iso()
+        now = _store_now_iso()
         with self.transaction() as conn:
             conn.execute(
                 """
@@ -401,7 +418,7 @@ class EventStore:
     def mark_candidates_suggested(self, candidate_keys: list[str]) -> int:
         if not candidate_keys:
             return 0
-        now = utc_now_iso()
+        now = _store_now_iso()
         with self.transaction() as conn:
             rows = conn.execute(
                 f"""
@@ -444,11 +461,11 @@ class EventStore:
             raise ValueError("human_label is required for relabeled verdict")
         if human_label is not None and human_label not in _CANDIDATE_LABELS:
             raise ValueError(f"invalid human label: {human_label}")
-        reviewed_at = utc_now_iso()
+        reviewed_at = _store_now_iso()
         with self.transaction() as conn:
             candidate = conn.execute(
                 """
-                SELECT candidate_key, window_id, judge_run_key
+                SELECT candidate_key, window_id, judge_run_key, status
                 FROM promotion_candidates
                 WHERE candidate_key=?
                 """,
@@ -460,6 +477,8 @@ class EventStore:
                 raise ValueError("window_id does not match candidate")
             if candidate["judge_run_key"] != judge_run_key:
                 raise ValueError("judge_run_key does not match candidate")
+            if candidate["status"] != "pending_review":
+                raise ValueError(f"candidate is not pending_review: {candidate_key}")
             row = conn.execute(
                 "SELECT COALESCE(MAX(review_seq), 0) AS max_seq FROM candidate_reviews WHERE candidate_key=?",
                 (candidate_key,),
@@ -499,23 +518,60 @@ class EventStore:
             )
             return review_seq
 
-    def pending_review_candidates(self, *, limit: int = 50) -> list[sqlite3.Row]:
+    def pending_review_candidates(self, *, limit: int | None = 50) -> list[sqlite3.Row]:
+        with schema_locked_connection() as conn:
+            sql = """
+                SELECT *
+                FROM promotion_candidates
+                WHERE status='pending_review'
+                ORDER BY created_at, candidate_key
+            """
+            params: tuple[Any, ...] = ()
+            if limit is not None:
+                sql += "\nLIMIT ?"
+                params = (limit,)
+            return conn.execute(sql, params).fetchall()
+
+    def get_promotion_candidate(self, candidate_key: str) -> sqlite3.Row | None:
         with schema_locked_connection() as conn:
             return conn.execute(
                 """
                 SELECT *
                 FROM promotion_candidates
-                WHERE status='pending_review'
-                ORDER BY created_at, candidate_key
-                LIMIT ?
+                WHERE candidate_key=?
+                LIMIT 1
                 """,
-                (limit,),
+                (candidate_key,),
+            ).fetchone()
+
+    def judge_run_counts(self) -> dict[str, int]:
+        with schema_locked_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT status, COUNT(*) AS count
+                FROM judge_runs
+                GROUP BY status
+                """
             ).fetchall()
+        counts = {str(row["status"]): int(row["count"]) for row in rows}
+        return {
+            "ready": counts.get("ready", 0),
+            "judged": counts.get("judged", 0),
+            "superseded": counts.get("superseded", 0),
+            "failed": counts.get("failed", 0),
+        }
 
     def pending_review_candidate_count(self) -> int:
         with schema_locked_connection() as conn:
             row = conn.execute(
                 "SELECT COUNT(*) AS count FROM promotion_candidates WHERE status='pending_review'"
+            ).fetchone()
+            return int(row["count"])
+
+    def candidate_review_count(self) -> int:
+        with schema_locked_connection() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS count FROM candidate_reviews"
             ).fetchone()
             return int(row["count"])
 
