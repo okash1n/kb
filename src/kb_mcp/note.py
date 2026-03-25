@@ -1,9 +1,12 @@
-"""Note creation utilities."""
+"""Note creation and update utilities."""
 
+import hashlib
 from datetime import datetime
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from ulid import ULID
+import yaml
 
 from kb_mcp.config import timezone
 
@@ -78,6 +81,105 @@ def parse_frontmatter(text: str) -> dict | None:
                 value = [v.strip() for v in value[1:-1].split(",") if v.strip()]
             fm[key] = value
     return fm
+
+
+def parse_markdown_note(text: str) -> tuple[dict, str]:
+    """Parse markdown note into frontmatter dict and body text."""
+    if not text.startswith("---\n"):
+        return {}, text
+    _, _, remainder = text.partition("---\n")
+    frontmatter_block, separator, body = remainder.partition("\n---\n")
+    if not separator:
+        return {}, text
+    data = yaml.safe_load(frontmatter_block) or {}
+    if not isinstance(data, dict):
+        raise ValueError("frontmatter must be a mapping")
+    return dict(data), body.lstrip("\n").rstrip("\n")
+
+
+def render_markdown_note(frontmatter: dict, body: str) -> str:
+    """Render frontmatter + body into markdown text."""
+    lines = ["---"]
+    preferred = ["id", "summary", "ai_tool", "ai_client", "repo", "tags", "related", "status"]
+    emitted: set[str] = set()
+    for key in preferred + list(frontmatter.keys()):
+        if key in emitted or key not in frontmatter:
+            continue
+        emitted.add(key)
+        value = frontmatter[key]
+        if value is None:
+            continue
+        if isinstance(value, list):
+            lines.append(f"{key}: [{', '.join(str(item) for item in value)}]")
+        else:
+            lines.append(f"{key}: {value}")
+    lines.append("---")
+    return "\n".join(lines) + f"\n\n{body.rstrip()}\n"
+
+
+def sha256_text(text: str) -> str:
+    """Return sha256 of text."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def update_markdown_note(
+    path: Path,
+    *,
+    frontmatter_patch: dict | None = None,
+    body_replace: str | None = None,
+) -> dict[str, str]:
+    """Atomically update markdown note frontmatter/body."""
+    original = path.read_text(encoding="utf-8")
+    frontmatter, body = parse_markdown_note(original)
+    note_id = str(frontmatter.get("id") or "")
+    if not note_id:
+        raise ValueError("target note is missing frontmatter id")
+    merged = _merge_frontmatter(frontmatter, frontmatter_patch or {})
+    if merged.get("id") != note_id:
+        raise ValueError("note id cannot be changed")
+    if frontmatter.get("created"):
+        merged["created"] = frontmatter["created"]
+    merged["updated"] = now_local()
+    next_body = body if body_replace is None else body_replace
+    before_sha256 = sha256_text(original)
+    updated = render_markdown_note(merged, next_body)
+    after_sha256 = sha256_text(updated)
+    tmp = path.with_name(f".{path.name}.tmp")
+    tmp.write_text(updated, encoding="utf-8")
+    tmp.replace(path)
+    from kb_mcp.vault_git import vault_git_sync
+
+    vault_git_sync(path)
+    return {
+        "note_id": note_id,
+        "note_path": str(path),
+        "before_sha256": before_sha256,
+        "after_sha256": after_sha256,
+    }
+
+
+def _merge_frontmatter(current: dict, patch: dict) -> dict:
+    merged = dict(current)
+    for key, value in patch.items():
+        if key == "created":
+            continue
+        if key == "id" and value is not None and current.get("id") not in (None, value):
+            raise ValueError("note id cannot be changed")
+        if isinstance(value, list):
+            existing = merged.get(key)
+            items: list[str] = []
+            if isinstance(existing, list):
+                items.extend(str(item) for item in existing)
+            elif existing not in (None, ""):
+                items.append(str(existing))
+            for item in value:
+                item_str = str(item)
+                if item_str not in items:
+                    items.append(item_str)
+            merged[key] = items
+        else:
+            merged[key] = value
+    return merged
 
 
 def build_frontmatter(

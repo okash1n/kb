@@ -43,11 +43,12 @@ def _build_materialization_plan(row: sqlite3.Row) -> dict[str, object]:
     judge_run = store.get_judge_run_by_key(str(state["judge_run_key"]))
     payload = json.loads(candidate["payload_json"])
     window = dict(payload.get("window") or {})
+    decision = dict(payload.get("decision") or {})
     checkpoints = list(window.get("checkpoints") or [])
     effective_label = str(state["effective_label"])
     summary = _materialization_summary(effective_label, checkpoints)
     ai_tool, ai_client = _materialization_actor(judge_run, checkpoints)
-    return {
+    plan = {
         "note_type": _note_type_for_label(effective_label),
         "summary": summary,
         "slug": summary,
@@ -75,6 +76,14 @@ def _build_materialization_plan(row: sqlite3.Row) -> dict[str, object]:
         "effective_label": effective_label,
         "status": "accepted" if effective_label == "adr" else None,
     }
+    supersede_target = decision.get("supersede_target")
+    if effective_label == "adr" and isinstance(supersede_target, dict):
+        plan["supersede_target"] = {
+            "note_id": supersede_target.get("note_id"),
+            "note_path": supersede_target.get("note_path"),
+            "materialization_key": supersede_target.get("materialization_key"),
+        }
+    return plan
 
 
 def _build_rich_plan(row: sqlite3.Row) -> dict[str, object]:

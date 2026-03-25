@@ -822,6 +822,38 @@ class EventStore:
                 (materialization_key,),
             ).fetchone()
 
+    def record_materialization_note_result(
+        self,
+        *,
+        materialization_key: str,
+        lease_owner: str,
+        lease_epoch: int,
+        note_id: str,
+        note_path: str,
+        promotion_key: str | None,
+    ) -> bool:
+        with self.transaction() as conn:
+            result = conn.execute(
+                """
+                UPDATE materialization_records
+                SET note_id=?,
+                    note_path=?,
+                    promotion_key=COALESCE(?, promotion_key),
+                    updated_at=?
+                WHERE materialization_key=? AND lease_owner=? AND lease_epoch=?
+                """,
+                (
+                    note_id,
+                    note_path,
+                    promotion_key,
+                    _store_now_iso(),
+                    materialization_key,
+                    lease_owner,
+                    lease_epoch,
+                ),
+            )
+            return result.rowcount > 0
+
     def mark_candidate_materialized(self, candidate_key: str, *, resolved_at: str | None = None) -> None:
         with self.transaction() as conn:
             now = resolved_at or utc_now_iso()
@@ -865,6 +897,52 @@ class EventStore:
                 """,
                 (candidate_key, review_seq),
             ).fetchone()
+
+    def get_note_mutation(self, *, note_id: str, request_key: str) -> sqlite3.Row | None:
+        with self.transaction() as conn:
+            return conn.execute(
+                """
+                SELECT *
+                FROM note_mutations
+                WHERE note_id=? AND request_key=?
+                LIMIT 1
+                """,
+                (note_id, request_key),
+            ).fetchone()
+
+    def record_note_mutation(
+        self,
+        *,
+        mutation_id: str,
+        note_id: str,
+        note_path: str,
+        mutation_kind: str,
+        request_key: str,
+        before_sha256: str,
+        after_sha256: str,
+        payload: dict[str, Any],
+    ) -> bool:
+        with self.transaction() as conn:
+            result = conn.execute(
+                """
+                INSERT OR IGNORE INTO note_mutations(
+                  mutation_id, note_id, note_path, mutation_kind, request_key,
+                  before_sha256, after_sha256, payload_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    mutation_id,
+                    note_id,
+                    note_path,
+                    mutation_kind,
+                    request_key,
+                    before_sha256,
+                    after_sha256,
+                    json.dumps(payload, ensure_ascii=False),
+                    _store_now_iso(),
+                ),
+            )
+            return result.rowcount > 0
 
     def _upsert_materialization_record_conn(
         self,

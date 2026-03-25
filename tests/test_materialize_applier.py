@@ -851,3 +851,466 @@ class MaterializeApplierTest(unittest.TestCase):
         self.assertEqual(repaired["note_id"], target["note_id"])
         self.assertEqual(Path(str(repaired["note_path"])).name, target["filename"])
         self.assertNotEqual(target["note_id"], "01PARTIALNOTEID00000000000000")
+
+    def test_resolve_note_path_rejects_stale_path_hint(self) -> None:
+        from kb_mcp.events.policies.promotion_applier import _resolve_note_path
+
+        wrong = save_note_by_type(
+            note_type="adr",
+            slug="wrong-adr",
+            summary="Wrong ADR",
+            content="wrong target",
+            ai_tool="codex",
+            ai_client="codex-cli",
+            project=self.project,
+            cwd=str(self.vault),
+            repo="github.com/example/repo",
+            tags=["promotion", "adr"],
+            related=[],
+            status="accepted",
+        )
+        self.assertIn("Saved:", wrong)
+        wrong_path = sorted((self.vault / "projects" / self.project / "adr").glob("*.md"))[0]
+
+        resolved = _resolve_note_path(
+            project=self.project,
+            cwd=str(self.vault),
+            repo="github.com/example/repo",
+            note_type="adr",
+            note_id="01MISMATCHEDNOTEID0000000000000",
+            path_hint=str(wrong_path),
+        )
+
+        self.assertIsNone(resolved)
+
+    def test_adr_materialization_supersedes_previous_note(self) -> None:
+        store = EventStore()
+        previous = save_note_by_type(
+            note_type="adr",
+            slug="old-adr",
+            summary="Old ADR",
+            content="previous decision",
+            ai_tool="codex",
+            ai_client="codex-cli",
+            project=self.project,
+            cwd=str(self.vault),
+            repo="github.com/example/repo",
+            tags=["promotion", "adr"],
+            related=[],
+            status="accepted",
+        )
+        self.assertIn("Saved:", previous)
+        adr_files = sorted((self.vault / "projects" / self.project / "adr").glob("*.md"))
+        previous_path = adr_files[0]
+        previous_fm = parse_frontmatter(previous_path.read_text(encoding="utf-8")) or {}
+
+        judge_run_key = "judge-adr-supersede"
+        candidate_key = "candidate-adr-supersede"
+        window = {
+            "window_id": "window-adr-supersede",
+            "partition_key": "partition-adr-supersede",
+            "start_ordinal": 1,
+            "end_ordinal": 2,
+            "checkpoints": [
+                {
+                    "summary": "この方針でいく",
+                    "content_excerpt": "旧方針を置き換える",
+                    "project": self.project,
+                    "repo": "github.com/example/repo",
+                }
+            ],
+        }
+        store.upsert_judge_run(
+            judge_run_key=judge_run_key,
+            partition_key="partition-adr-supersede",
+            window_id="window-adr-supersede",
+            start_ordinal=1,
+            end_ordinal=2,
+            window_index=1,
+            status="judged",
+            prompt_version="v1",
+            labels=[{"label": "adr", "score": 0.93, "reasons": ["agreement"]}],
+            decision={},
+            model_hint="codex",
+        )
+        store.upsert_promotion_candidate(
+            candidate_key=candidate_key,
+            window_id="window-adr-supersede",
+            judge_run_key=judge_run_key,
+            label="adr",
+            status="pending_review",
+            score=0.93,
+            slice_fingerprint="window-adr-supersede",
+            reasons=["agreement"],
+            payload={
+                "window": window,
+                "decision": {
+                    "supersede_target": {
+                        "note_id": previous_fm["id"],
+                        "note_path": str(previous_path),
+                    }
+                },
+            },
+        )
+        review_seq = store.record_candidate_review(
+            review_id="review-adr-supersede",
+            candidate_key=candidate_key,
+            judge_run_key=judge_run_key,
+            window_id="window-adr-supersede",
+            ai_labels=[{"label": "adr", "score": 0.93}],
+            ai_score={"adr": 0.93},
+            human_verdict="accepted",
+            human_label=None,
+            review_comment=None,
+            reviewed_by="tester",
+        )
+        store.enqueue_materialization_resolution(
+            candidate_key=candidate_key,
+            review_seq=review_seq,
+            effective_label="adr",
+            materialization_key="mat-adr-supersede",
+            judge_run_key=judge_run_key,
+            window_id="window-adr-supersede",
+            payload={"candidate_key": candidate_key},
+            project=self.project,
+            cwd=str(self.vault),
+            repo="github.com/example/repo",
+        )
+
+        result = run_once()
+
+        self.assertEqual(result["failed"], 0)
+        adr_files = sorted((self.vault / "projects" / self.project / "adr").glob("*.md"))
+        self.assertEqual(len(adr_files), 2)
+        updated_previous = parse_frontmatter(previous_path.read_text(encoding="utf-8")) or {}
+        new_path = [path for path in adr_files if path != previous_path][0]
+        new_fm = parse_frontmatter(new_path.read_text(encoding="utf-8")) or {}
+        self.assertEqual(updated_previous["status"], "superseded")
+        self.assertIn(new_fm["id"], updated_previous["related"])
+        record = store.get_materialization_record("mat-adr-supersede")
+        candidate = store.get_promotion_candidate(candidate_key)
+        mutation = store.get_note_mutation(
+            note_id=previous_fm["id"],
+            request_key="materialize:mat-adr-supersede:frontmatter_merge:1",
+        )
+        self.assertEqual(record["status"], "applied")
+        self.assertEqual(candidate["status"], "materialized")
+        self.assertIsNotNone(mutation)
+
+    def test_adr_materialization_retries_supersede_after_repair_pending(self) -> None:
+        store = EventStore()
+        save_note_by_type(
+            note_type="adr",
+            slug="old-adr-repair",
+            summary="Old ADR Repair",
+            content="previous decision",
+            ai_tool="codex",
+            ai_client="codex-cli",
+            project=self.project,
+            cwd=str(self.vault),
+            repo="github.com/example/repo",
+            tags=["promotion", "adr"],
+            related=[],
+            status="accepted",
+        )
+        previous_path = sorted((self.vault / "projects" / self.project / "adr").glob("*.md"))[0]
+        previous_fm = parse_frontmatter(previous_path.read_text(encoding="utf-8")) or {}
+
+        judge_run_key = "judge-adr-repair"
+        candidate_key = "candidate-adr-repair"
+        window = {
+            "window_id": "window-adr-repair",
+            "partition_key": "partition-adr-repair",
+            "start_ordinal": 1,
+            "end_ordinal": 2,
+            "checkpoints": [
+                {
+                    "summary": "方針を更新する",
+                    "content_excerpt": "旧 ADR を置き換える",
+                    "project": self.project,
+                    "repo": "github.com/example/repo",
+                }
+            ],
+        }
+        store.upsert_judge_run(
+            judge_run_key=judge_run_key,
+            partition_key="partition-adr-repair",
+            window_id="window-adr-repair",
+            start_ordinal=1,
+            end_ordinal=2,
+            window_index=1,
+            status="judged",
+            prompt_version="v1",
+            labels=[{"label": "adr", "score": 0.94, "reasons": ["agreement"]}],
+            decision={},
+            model_hint="codex",
+        )
+        store.upsert_promotion_candidate(
+            candidate_key=candidate_key,
+            window_id="window-adr-repair",
+            judge_run_key=judge_run_key,
+            label="adr",
+            status="pending_review",
+            score=0.94,
+            slice_fingerprint="window-adr-repair",
+            reasons=["agreement"],
+            payload={
+                "window": window,
+                "decision": {
+                    "supersede_target": {
+                        "note_id": previous_fm["id"],
+                        "note_path": str(previous_path),
+                    }
+                },
+            },
+        )
+        review_seq = store.record_candidate_review(
+            review_id="review-adr-repair",
+            candidate_key=candidate_key,
+            judge_run_key=judge_run_key,
+            window_id="window-adr-repair",
+            ai_labels=[{"label": "adr", "score": 0.94}],
+            ai_score={"adr": 0.94},
+            human_verdict="accepted",
+            human_label=None,
+            review_comment=None,
+            reviewed_by="tester",
+        )
+        store.enqueue_materialization_resolution(
+            candidate_key=candidate_key,
+            review_seq=review_seq,
+            effective_label="adr",
+            materialization_key="mat-adr-repair",
+            judge_run_key=judge_run_key,
+            window_id="window-adr-repair",
+            payload={"candidate_key": candidate_key},
+            project=self.project,
+            cwd=str(self.vault),
+            repo="github.com/example/repo",
+        )
+
+        with patch(
+            "kb_mcp.events.policies.promotion_applier.update_markdown_note",
+            side_effect=RuntimeError("mutation failed"),
+        ):
+            first = run_once()
+
+        self.assertEqual(first["failed"], 1)
+        record = store.get_materialization_record("mat-adr-repair")
+        candidate = store.get_promotion_candidate(candidate_key)
+        self.assertEqual(record["status"], "repair_pending")
+        self.assertEqual(candidate["status"], "accepted")
+        adr_files = sorted((self.vault / "projects" / self.project / "adr").glob("*.md"))
+        self.assertEqual(len(adr_files), 2)
+
+        store.replay_dead_letters()
+        second = run_once()
+
+        self.assertEqual(second["failed"], 0)
+        repaired_previous = parse_frontmatter(previous_path.read_text(encoding="utf-8")) or {}
+        repaired_record = store.get_materialization_record("mat-adr-repair")
+        repaired_candidate = store.get_promotion_candidate(candidate_key)
+        self.assertEqual(repaired_previous["status"], "superseded")
+        self.assertEqual(repaired_record["status"], "applied")
+        self.assertEqual(repaired_candidate["status"], "materialized")
+
+    def test_adr_materialization_recovers_when_mutation_ledger_write_failed_after_update(self) -> None:
+        store = EventStore()
+        save_note_by_type(
+            note_type="adr",
+            slug="old-adr-ledger",
+            summary="Old ADR Ledger",
+            content="previous decision",
+            ai_tool="codex",
+            ai_client="codex-cli",
+            project=self.project,
+            cwd=str(self.vault),
+            repo="github.com/example/repo",
+            tags=["promotion", "adr"],
+            related=[],
+            status="accepted",
+        )
+        previous_path = sorted((self.vault / "projects" / self.project / "adr").glob("*.md"))[0]
+        previous_fm = parse_frontmatter(previous_path.read_text(encoding="utf-8")) or {}
+
+        judge_run_key = "judge-adr-ledger"
+        candidate_key = "candidate-adr-ledger"
+        window = {
+            "window_id": "window-adr-ledger",
+            "partition_key": "partition-adr-ledger",
+            "start_ordinal": 1,
+            "end_ordinal": 2,
+            "checkpoints": [
+                {
+                    "summary": "新しい ADR に置き換える",
+                    "content_excerpt": "ledger failure を回復する",
+                    "project": self.project,
+                    "repo": "github.com/example/repo",
+                }
+            ],
+        }
+        store.upsert_judge_run(
+            judge_run_key=judge_run_key,
+            partition_key="partition-adr-ledger",
+            window_id="window-adr-ledger",
+            start_ordinal=1,
+            end_ordinal=2,
+            window_index=1,
+            status="judged",
+            prompt_version="v1",
+            labels=[{"label": "adr", "score": 0.95, "reasons": ["agreement"]}],
+            decision={},
+            model_hint="codex",
+        )
+        store.upsert_promotion_candidate(
+            candidate_key=candidate_key,
+            window_id="window-adr-ledger",
+            judge_run_key=judge_run_key,
+            label="adr",
+            status="pending_review",
+            score=0.95,
+            slice_fingerprint="window-adr-ledger",
+            reasons=["agreement"],
+            payload={
+                "window": window,
+                "decision": {
+                    "supersede_target": {
+                        "note_id": previous_fm["id"],
+                        "note_path": str(previous_path),
+                    }
+                },
+            },
+        )
+        review_seq = store.record_candidate_review(
+            review_id="review-adr-ledger",
+            candidate_key=candidate_key,
+            judge_run_key=judge_run_key,
+            window_id="window-adr-ledger",
+            ai_labels=[{"label": "adr", "score": 0.95}],
+            ai_score={"adr": 0.95},
+            human_verdict="accepted",
+            human_label=None,
+            review_comment=None,
+            reviewed_by="tester",
+        )
+        store.enqueue_materialization_resolution(
+            candidate_key=candidate_key,
+            review_seq=review_seq,
+            effective_label="adr",
+            materialization_key="mat-adr-ledger",
+            judge_run_key=judge_run_key,
+            window_id="window-adr-ledger",
+            payload={"candidate_key": candidate_key},
+            project=self.project,
+            cwd=str(self.vault),
+            repo="github.com/example/repo",
+        )
+
+        with patch(
+            "kb_mcp.events.policies.promotion_applier.EventStore.record_note_mutation",
+            return_value=False,
+        ):
+            first = run_once()
+
+        self.assertEqual(first["failed"], 1)
+        updated_previous = parse_frontmatter(previous_path.read_text(encoding="utf-8")) or {}
+        self.assertEqual(updated_previous["status"], "superseded")
+        store.replay_dead_letters()
+
+        second = run_once()
+
+        self.assertEqual(second["failed"], 0)
+        mutation = store.get_note_mutation(
+            note_id=previous_fm["id"],
+            request_key="materialize:mat-adr-ledger:frontmatter_merge:1",
+        )
+        record = store.get_materialization_record("mat-adr-ledger")
+        candidate = store.get_promotion_candidate(candidate_key)
+        self.assertIsNotNone(mutation)
+        self.assertEqual(record["status"], "applied")
+        self.assertEqual(candidate["status"], "materialized")
+
+    def test_adr_materialization_enters_repair_when_supersede_target_cannot_be_resolved(self) -> None:
+        store = EventStore()
+        judge_run_key = "judge-adr-missing-target"
+        candidate_key = "candidate-adr-missing-target"
+        window = {
+            "window_id": "window-adr-missing-target",
+            "partition_key": "partition-adr-missing-target",
+            "start_ordinal": 1,
+            "end_ordinal": 2,
+            "checkpoints": [
+                {
+                    "summary": "方針を更新する",
+                    "content_excerpt": "supersede target が解決できない",
+                    "project": self.project,
+                    "repo": "github.com/example/repo",
+                }
+            ],
+        }
+        store.upsert_judge_run(
+            judge_run_key=judge_run_key,
+            partition_key="partition-adr-missing-target",
+            window_id="window-adr-missing-target",
+            start_ordinal=1,
+            end_ordinal=2,
+            window_index=1,
+            status="judged",
+            prompt_version="v1",
+            labels=[{"label": "adr", "score": 0.95, "reasons": ["agreement"]}],
+            decision={},
+            model_hint="codex",
+        )
+        store.upsert_promotion_candidate(
+            candidate_key=candidate_key,
+            window_id="window-adr-missing-target",
+            judge_run_key=judge_run_key,
+            label="adr",
+            status="pending_review",
+            score=0.95,
+            slice_fingerprint="window-adr-missing-target",
+            reasons=["agreement"],
+            payload={
+                "window": window,
+                "decision": {
+                    "supersede_target": {
+                        "note_id": "01MISSINGTARGET0000000000000000",
+                        "note_path": str(self.vault / "projects" / self.project / "adr" / "missing.md"),
+                    }
+                },
+            },
+        )
+        review_seq = store.record_candidate_review(
+            review_id="review-adr-missing-target",
+            candidate_key=candidate_key,
+            judge_run_key=judge_run_key,
+            window_id="window-adr-missing-target",
+            ai_labels=[{"label": "adr", "score": 0.95}],
+            ai_score={"adr": 0.95},
+            human_verdict="accepted",
+            human_label=None,
+            review_comment=None,
+            reviewed_by="tester",
+        )
+        store.enqueue_materialization_resolution(
+            candidate_key=candidate_key,
+            review_seq=review_seq,
+            effective_label="adr",
+            materialization_key="mat-adr-missing-target",
+            judge_run_key=judge_run_key,
+            window_id="window-adr-missing-target",
+            payload={"candidate_key": candidate_key},
+            project=self.project,
+            cwd=str(self.vault),
+            repo="github.com/example/repo",
+        )
+
+        result = run_once()
+
+        self.assertEqual(result["failed"], 1)
+        record = store.get_materialization_record("mat-adr-missing-target")
+        candidate = store.get_promotion_candidate(candidate_key)
+        adr_files = sorted((self.vault / "projects" / self.project / "adr").glob("*.md"))
+        self.assertEqual(len(adr_files), 1)
+        self.assertEqual(record["status"], "repair_pending")
+        self.assertEqual(candidate["status"], "accepted")
