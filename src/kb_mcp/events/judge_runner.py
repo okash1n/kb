@@ -14,6 +14,7 @@ from kb_mcp.events.judge_backend import (
     build_fastpath_backend,
     fastpath_backend_command_hash,
 )
+from kb_mcp.events.learning_contract import default_candidate_semantics
 from kb_mcp.events.judge_inputs import build_window_payload, build_windows
 from kb_mcp.events.store import EventStore
 from kb_mcp.events.types import utc_now_iso
@@ -166,6 +167,7 @@ def _upsert_candidate(
     reasons: list[str],
     payload: dict[str, Any],
 ) -> int:
+    semantics = default_candidate_semantics(label)
     store.upsert_promotion_candidate(
         candidate_key=_candidate_key(window_payload["window_id"], label),
         window_id=window_payload["window_id"],
@@ -175,7 +177,7 @@ def _upsert_candidate(
         score=score,
         slice_fingerprint=window_payload["window_id"],
         reasons=reasons,
-        payload=payload,
+        payload={**payload, "semantics": semantics},
     )
     return 1
 

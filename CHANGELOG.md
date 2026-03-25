@@ -7,6 +7,17 @@
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-03-26
+
+### Added
+
+- judge candidate payload に governed runtime learning contract の初期 semantics を含めるようにした
+
+### Changed
+
+- learning contract の default semantics を helper に集約し、judge candidate と schema backfill が同じ初期規則を使うようにした
+- `session_thin` を `session_local` / `session_summary_only` として扱う runtime semantics を固定した
+
 ## [0.8.0] - 2026-03-26
 
 ### Added
