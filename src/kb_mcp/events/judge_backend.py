@@ -11,6 +11,9 @@ from typing import Any, Protocol
 
 from importlib.resources import files
 
+FASTPATH_TIMEOUT_SECONDS = 1.5
+FASTPATH_CONTRACT_VERSION = 1
+
 
 @dataclass(slots=True)
 class JudgeDecision:
@@ -125,8 +128,10 @@ class HeuristicJudgeBackend:
 class CommandJudgeBackend:
     """External command backend for active-client model execution."""
 
-    def __init__(self, command: str) -> None:
+    def __init__(self, command: str, *, timeout_seconds: float | None = None, contract_version: int = FASTPATH_CONTRACT_VERSION) -> None:
         self._command = command
+        self._timeout_seconds = timeout_seconds
+        self._contract_version = contract_version
 
     def prompt_version(self) -> str:
         return load_prompt_version()
@@ -140,6 +145,7 @@ class CommandJudgeBackend:
     ) -> JudgeDecision:
         body = json.dumps(
             {
+                "contract_version": self._contract_version,
                 "prompt_version": prompt_version,
                 "prompt_template": load_prompt_template(),
                 "window": payload,
@@ -154,8 +160,14 @@ class CommandJudgeBackend:
             shell=True,
             check=True,
             capture_output=True,
+            timeout=self._timeout_seconds,
         )
         response = json.loads(completed.stdout)
+        response_contract = int(response.get("contract_version", FASTPATH_CONTRACT_VERSION))
+        if response_contract != self._contract_version:
+            raise RuntimeError(
+                f"judge backend contract mismatch: expected {self._contract_version}, got {response_contract}"
+            )
         return JudgeDecision(
             labels=list(response.get("labels", [])),
             should_emit_thin_session=bool(response.get("should_emit_thin_session", False)),
@@ -169,3 +181,27 @@ def build_backend(model_hint: str | None = None) -> JudgeBackend:
     if command:
         return CommandJudgeBackend(command)
     return HeuristicJudgeBackend()
+
+
+def build_fastpath_backend(model_hint: str | None = None) -> JudgeBackend | None:
+    command = os.environ.get("KB_JUDGE_FASTPATH_COMMAND", "").strip()
+    if not command:
+        return None
+    return CommandJudgeBackend(
+        command,
+        timeout_seconds=FASTPATH_TIMEOUT_SECONDS,
+        contract_version=FASTPATH_CONTRACT_VERSION,
+    )
+
+
+def fastpath_backend_command_hash() -> str | None:
+    command = os.environ.get("KB_JUDGE_FASTPATH_COMMAND", "").strip()
+    if not command:
+        return None
+    return hashlib_sha256(command)
+
+
+def hashlib_sha256(text: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()

@@ -48,7 +48,7 @@ def write_wrapper_script(
     script = hooks_dir / f"{name}.sh"
     dispatch_command = (
         f'printf "%s" "${{PAYLOAD}}" | "{kb_mcp_path}" hook dispatch '
-        f"--tool {tool} --client {client} --layer client_hook --event turn_checkpointed --run-worker"
+        f"--tool {tool} --client {client} --layer client_hook --event turn_checkpointed --judge-fastpath --run-worker"
     )
     if suppress_stdout:
         dispatch_command += " >/dev/null"
@@ -57,6 +57,10 @@ def write_wrapper_script(
         "#!/usr/bin/env bash",
         "set -euo pipefail",
         'RAW_INPUT=""',
+        'JUDGE_FASTPATH_FLAG=""',
+        'if [[ -n "${KB_JUDGE_FASTPATH_COMMAND:-}" ]]; then',
+        '  JUDGE_FASTPATH_FLAG="--judge-fastpath"',
+        "fi",
         'if [[ ! -t 0 ]]; then',
         '  RAW_INPUT="$(cat)"',
         "fi",
@@ -81,7 +85,7 @@ def write_wrapper_script(
         "print(json.dumps(payload, ensure_ascii=False))",
         "PY",
         ')"',
-        dispatch_command,
+        dispatch_command.replace("--judge-fastpath", '${JUDGE_FASTPATH_FLAG}'),
         "",
     ]
     script.write_text("\n".join(lines), encoding="utf-8")

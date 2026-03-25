@@ -458,6 +458,7 @@ def cmd_hook_dispatch(args: argparse.Namespace) -> None:
         normalize_copilot_payload,
     )
     from kb_mcp.events.emergency_spool import spool_event
+    from kb_mcp.events.judge_runner import review_latest_window_fastpath
     from kb_mcp.events.normalize import normalize_event
     from kb_mcp.events.store import EventStore
     from kb_mcp.events.worker import run_once
@@ -489,6 +490,32 @@ def cmd_hook_dispatch(args: argparse.Namespace) -> None:
         print(f"dispatch failed: {exc}", file=sys.stderr)
         raise
 
+    fastpath_result = None
+    if (
+        getattr(args, "judge_fastpath", False)
+        and args.layer == "client_hook"
+        and args.event == "turn_checkpointed"
+    ):
+        partition_key = envelope.aggregate_state.get("checkpoint_partition_key")
+        if partition_key:
+            try:
+                fastpath_result = review_latest_window_fastpath(
+                    partition_key=str(partition_key),
+                    source_tool=args.tool,
+                    source_client=args.client,
+                    model_hint=args.client,
+                )
+            except Exception as exc:
+                try:
+                    EventStore().put_runtime_observation(
+                        key=f"judge_fastpath_warning:{result.logical_key}",
+                        severity="warning",
+                        message="judge fast-path skipped after error",
+                        details={"logical_key": result.logical_key, "error": str(exc)},
+                    )
+                except Exception:
+                    pass
+
     if getattr(args, "run_worker", False):
         worker_result = run_once(maintenance=args.event == "session_ended")
         exit_code = 0 if worker_result["failed"] == 0 else 2
@@ -500,6 +527,7 @@ def cmd_hook_dispatch(args: argparse.Namespace) -> None:
                     "status": result.status,
                     "aggregate_version": result.aggregate_version,
                     "queued_sinks": result.queued_sinks,
+                    "judge_fastpath": fastpath_result,
                     "worker": worker_result,
                 },
                 ensure_ascii=False,
@@ -517,6 +545,7 @@ def cmd_hook_dispatch(args: argparse.Namespace) -> None:
                 "status": result.status,
                 "aggregate_version": result.aggregate_version,
                 "queued_sinks": result.queued_sinks,
+                "judge_fastpath": fastpath_result,
             },
             ensure_ascii=False,
         )
@@ -902,6 +931,7 @@ def build_parser() -> argparse.ArgumentParser:
     dispatch_parser.add_argument("--event", required=True)
     dispatch_parser.add_argument("--payload-file")
     dispatch_parser.add_argument("--run-worker", action="store_true", help="Drain worker after dispatch")
+    dispatch_parser.add_argument("--judge-fastpath", action="store_true", help="Attempt fast-path judge before worker drain")
 
     # worker
     worker_parser = sub.add_parser("worker", help="Event worker commands")
