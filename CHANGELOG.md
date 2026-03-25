@@ -10,10 +10,12 @@
 ### Added
 
 - judge / candidate / human review 用の review ledger schema と store API を追加
+- partition / ordinal から judge 用 window payload を再構成する `judge_inputs` と deterministic signal extractor を追加
 
 ### Changed
 
 - event DB schema version を `3` に上げる準備を進めた
+- `topic_shift_candidate` と `knowledge` 補助 signal を cross-client 共通ルールで抽出するようにした
 
 ## [0.5.1] - 2026-03-25
 
