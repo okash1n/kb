@@ -6,6 +6,11 @@ import json
 from typing import Iterable
 
 from kb_mcp.events.store import EventStore
+from kb_mcp.learning.client_capabilities import (
+    client_allows_asset,
+    effective_distribution_allowed,
+    effective_secrecy_boundary,
+)
 from kb_mcp.learning.models import LearningAssetView, ResolverInput
 from kb_mcp.resolver import resolve_project
 
@@ -46,7 +51,7 @@ def resolve_learning_assets(
     matched = [
         _row_to_view(row)
         for row in rows
-        if _matches_scope(_row_to_view(row), request=request, resolved_project=resolved_project)
+        if asset_matches_request(_row_to_view(row), request=request, resolved_project=resolved_project)
     ]
     return sorted(
         matched,
@@ -60,15 +65,21 @@ def resolve_learning_assets(
     )
 
 
-def _matches_scope(
+def asset_matches_request(
     asset: LearningAssetView,
     *,
     request: ResolverInput,
-    resolved_project: str | None,
+    resolved_project: str | None = None,
 ) -> bool:
+    if resolved_project is None:
+        resolved_project, _ = resolve_project(
+            project=request.project,
+            cwd=request.cwd,
+            repo=request.repo,
+        )
     if asset.lifecycle not in _APPLICABLE_LIFECYCLES:
         return False
-    if not _distribution_allows(asset):
+    if not _distribution_allows(asset, request=request):
         return False
     provenance = asset.provenance
     if asset.scope == "session_local":
@@ -82,13 +93,14 @@ def _matches_scope(
     return False
 
 
-def _distribution_allows(asset: LearningAssetView) -> bool:
+def _distribution_allows(asset: LearningAssetView, *, request: ResolverInput) -> bool:
+    if not client_allows_asset(asset, source_client=request.source_client):
+        return False
     if asset.scope in {"session_local", "client_local", "project_local"}:
         return True
-    distribution_allowed = asset.traceability.get("distribution_allowed")
-    if distribution_allowed is False:
+    if not effective_distribution_allowed(asset):
         return False
-    secrecy_boundary = asset.traceability.get("secrecy_boundary")
+    secrecy_boundary = effective_secrecy_boundary(asset)
     if asset.scope == "user_global":
         return secrecy_boundary in {None, "user", "general"}
     if asset.scope == "general":
