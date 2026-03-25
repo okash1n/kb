@@ -65,3 +65,35 @@ class LearningCliTest(unittest.TestCase):
         payload = json.loads(buf.getvalue())
         self.assertEqual(payload["total"], 1)
         self.assertEqual(payload["results"][0]["asset_key"], "asset-1")
+
+    def test_judge_retract_learning_updates_asset(self) -> None:
+        store = EventStore()
+        store.upsert_learning_asset(
+            asset_key="asset-active",
+            candidate_key=None,
+            review_id=None,
+            materialization_key=None,
+            note_id=None,
+            note_path=None,
+            memory_class="gap",
+            update_target="behavior_style",
+            scope="project_local",
+            force="preferred",
+            confidence="reviewed",
+            lifecycle="active",
+            provenance={"project": "demo"},
+            traceability={},
+            revocation_path={},
+            learning_state_visibility="active",
+            source_status="materialized",
+        )
+        from kb_mcp import cli
+
+        buf = io.StringIO()
+        with patch("sys.argv", ["kb-mcp", "judge", "retract-learning", "asset-active", "--reason", "wrong"]):
+            with redirect_stdout(buf):
+                cli.main()
+        payload = json.loads(buf.getvalue())
+        self.assertEqual(payload["lifecycle"], "retracted")
+        row = store.get_learning_asset("asset-active")
+        self.assertEqual(row["lifecycle"], "retracted")

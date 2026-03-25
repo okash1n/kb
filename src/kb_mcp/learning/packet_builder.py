@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from kb_mcp.events.store import EventStore
 from kb_mcp.learning.models import LearningAssetView, ResolverInput
+from kb_mcp.learning.revocation import packet_expires_at
 from kb_mcp.note import generate_ulid
 
 
@@ -29,6 +30,7 @@ def build_learning_packet(
         repo=request.repo,
         cwd=request.cwd,
         asset_keys=asset_keys,
+        expires_at=packet_expires_at(),
     )
     return {
         "packet_id": packet_id,

@@ -358,7 +358,9 @@ class InstallAndDoctorTest(unittest.TestCase):
 
         self.assertIn("Learning assets: 1", report)
         self.assertIn("Learning packets: 1", report)
+        self.assertIn("Learning packets invalidated: 0", report)
         self.assertIn("Learning applications: 1", report)
+        self.assertIn("Learning revocations: 0", report)
         self.assertIn("Learning active assets: 1", report)
 
     @mock.patch("kb_mcp.doctor.EventStore")

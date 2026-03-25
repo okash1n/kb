@@ -794,6 +794,51 @@ def cmd_judge_learning_state(args: argparse.Namespace) -> None:
     )
 
 
+def cmd_judge_retract_learning(args: argparse.Namespace) -> None:
+    from kb_mcp.learning.revocation import retract_learning_asset
+
+    print(
+        json.dumps(
+            retract_learning_asset(
+                asset_key=args.asset_key,
+                actor=args.actor,
+                reason=args.reason,
+            ),
+            ensure_ascii=False,
+        )
+    )
+
+
+def cmd_judge_supersede_learning(args: argparse.Namespace) -> None:
+    from kb_mcp.learning.revocation import supersede_learning_asset
+
+    print(
+        json.dumps(
+            supersede_learning_asset(
+                asset_key=args.asset_key,
+                replacement_asset_key=args.replacement_asset_key,
+                actor=args.actor,
+                reason=args.reason,
+            ),
+            ensure_ascii=False,
+        )
+    )
+
+
+def cmd_judge_expire_learning(args: argparse.Namespace) -> None:
+    from kb_mcp.learning.revocation import expire_learning_assets, invalidate_expired_packets
+
+    expired_packets = invalidate_expired_packets()
+    result = expire_learning_assets(
+        before=args.before,
+        actor=args.actor,
+        reason=args.reason,
+        limit=args.limit,
+    )
+    result.update(expired_packets)
+    print(json.dumps(result, ensure_ascii=False))
+
+
 def cmd_judge_retry_failed_materializations(args: argparse.Namespace) -> None:
     """Requeue repairable materialization records."""
     from kb_mcp.events.worker import retry_failed_materializations
@@ -1015,6 +1060,20 @@ def build_parser() -> argparse.ArgumentParser:
     judge_materialize_parser.add_argument("--limit", type=int, default=50)
     judge_learning_state_parser = judge_sub.add_parser("learning-state", help="Show learning asset visibility state")
     judge_learning_state_parser.add_argument("--limit", type=int, default=50)
+    judge_retract_learning_parser = judge_sub.add_parser("retract-learning", help="Retract one active learning asset")
+    judge_retract_learning_parser.add_argument("asset_key")
+    judge_retract_learning_parser.add_argument("--reason", required=True)
+    judge_retract_learning_parser.add_argument("--actor", default="operator")
+    judge_supersede_learning_parser = judge_sub.add_parser("supersede-learning", help="Supersede one active learning asset")
+    judge_supersede_learning_parser.add_argument("asset_key")
+    judge_supersede_learning_parser.add_argument("--replacement-asset-key", required=True)
+    judge_supersede_learning_parser.add_argument("--reason", required=True)
+    judge_supersede_learning_parser.add_argument("--actor", default="operator")
+    judge_expire_learning_parser = judge_sub.add_parser("expire-learning", help="Expire stale learning assets")
+    judge_expire_learning_parser.add_argument("--before", required=True)
+    judge_expire_learning_parser.add_argument("--reason", required=True)
+    judge_expire_learning_parser.add_argument("--actor", default="operator")
+    judge_expire_learning_parser.add_argument("--limit", type=int, default=100)
     judge_retry_parser = judge_sub.add_parser("retry-failed-materializations", help="Requeue repairable materializations")
     judge_retry_parser.add_argument("--limit", type=int, default=50)
 
@@ -1069,6 +1128,12 @@ def main() -> None:
             cmd_judge_materialize(args)
         elif args.judge_command == "learning-state":
             cmd_judge_learning_state(args)
+        elif args.judge_command == "retract-learning":
+            cmd_judge_retract_learning(args)
+        elif args.judge_command == "supersede-learning":
+            cmd_judge_supersede_learning(args)
+        elif args.judge_command == "expire-learning":
+            cmd_judge_expire_learning(args)
         elif args.judge_command == "retry-failed-materializations":
             cmd_judge_retry_failed_materializations(args)
         else:

@@ -1575,6 +1575,56 @@ class EventStore:
                 """
             ).fetchall()
 
+    def update_learning_asset(
+        self,
+        *,
+        asset_key: str,
+        lifecycle: str,
+        learning_state_visibility: str,
+        revocation_path: dict[str, Any],
+        source_status: str,
+        confidence: str | None = None,
+        updated_at: str | None = None,
+    ) -> sqlite3.Row:
+        if lifecycle not in _LEARNING_LIFECYCLES:
+            raise ValueError(f"invalid lifecycle: {lifecycle}")
+        if learning_state_visibility not in _LEARNING_VISIBILITY:
+            raise ValueError(f"invalid learning_state_visibility: {learning_state_visibility}")
+        now = updated_at or _store_now_iso()
+        with self.transaction() as conn:
+            row = conn.execute(
+                "SELECT * FROM learning_assets WHERE asset_key=? LIMIT 1",
+                (asset_key,),
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"learning asset not found: {asset_key}")
+            next_confidence = confidence or str(row["confidence"])
+            conn.execute(
+                """
+                UPDATE learning_assets
+                SET lifecycle=?,
+                    learning_state_visibility=?,
+                    revocation_path_json=?,
+                    source_status=?,
+                    confidence=?,
+                    updated_at=?
+                WHERE asset_key=?
+                """,
+                (
+                    lifecycle,
+                    learning_state_visibility,
+                    json.dumps(revocation_path, ensure_ascii=False),
+                    source_status,
+                    next_confidence,
+                    now,
+                    asset_key,
+                ),
+            )
+        updated = self.get_learning_asset(asset_key)
+        if updated is None:
+            raise ValueError(f"learning asset not found after update: {asset_key}")
+        return updated
+
     def learning_asset_counts(self) -> dict[str, int]:
         with schema_locked_connection() as conn:
             total_row = conn.execute("SELECT COUNT(*) AS count FROM learning_assets").fetchone()
@@ -1608,6 +1658,7 @@ class EventStore:
         repo: str | None,
         cwd: str | None,
         asset_keys: list[str],
+        expires_at: str | None = None,
     ) -> None:
         now = _store_now_iso()
         with self.transaction() as conn:
@@ -1615,8 +1666,8 @@ class EventStore:
                 """
                 INSERT OR IGNORE INTO learning_packets(
                   packet_id, source_tool, source_client, tool_name, session_id,
-                  project, repo, cwd, asset_count, status, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+                  project, repo, cwd, asset_count, status, expires_at, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)
                 """,
                 (
                     packet_id,
@@ -1628,6 +1679,7 @@ class EventStore:
                     repo,
                     cwd,
                     len(asset_keys),
+                    expires_at,
                     now,
                     now,
                 ),
@@ -1681,11 +1733,149 @@ class EventStore:
     def learning_packet_counts(self) -> dict[str, int]:
         with schema_locked_connection() as conn:
             packet_row = conn.execute("SELECT COUNT(*) AS count FROM learning_packets").fetchone()
+            invalidated_row = conn.execute(
+                "SELECT COUNT(*) AS count FROM learning_packets WHERE status='invalidated'"
+            ).fetchone()
             application_row = conn.execute("SELECT COUNT(*) AS count FROM learning_applications").fetchone()
         return {
             "packets": int(packet_row["count"]),
+            "invalidated_packets": int(invalidated_row["count"]),
             "applications": int(application_row["count"]),
         }
+
+    def get_learning_packet(self, packet_id: str) -> sqlite3.Row | None:
+        with schema_locked_connection() as conn:
+            return conn.execute(
+                """
+                SELECT *
+                FROM learning_packets
+                WHERE packet_id=?
+                LIMIT 1
+                """,
+                (packet_id,),
+            ).fetchone()
+
+    def invalidate_learning_packets(
+        self,
+        *,
+        asset_keys: list[str],
+        reason: str,
+        invalidated_at: str | None = None,
+    ) -> int:
+        if not asset_keys:
+            return 0
+        now = invalidated_at or _store_now_iso()
+        placeholders = ", ".join("?" for _ in asset_keys)
+        with self.transaction() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT DISTINCT packet_id
+                FROM learning_packet_assets
+                WHERE asset_key IN ({placeholders})
+                """,
+                tuple(asset_keys),
+            ).fetchall()
+            packet_ids = [str(row["packet_id"]) for row in rows]
+            if not packet_ids:
+                return 0
+            packet_placeholders = ", ".join("?" for _ in packet_ids)
+            result = conn.execute(
+                f"""
+                UPDATE learning_packets
+                SET status='invalidated',
+                    invalidated_at=?,
+                    invalidation_reason=?,
+                    updated_at=?
+                WHERE packet_id IN ({packet_placeholders})
+                  AND status != 'invalidated'
+                """,
+                (now, reason, now, *packet_ids),
+            )
+            return int(result.rowcount)
+
+    def invalidate_expired_learning_packets(self, *, now: str | None = None) -> int:
+        current = now or _store_now_iso()
+        with self.transaction() as conn:
+            result = conn.execute(
+                """
+                UPDATE learning_packets
+                SET status='invalidated',
+                    invalidated_at=?,
+                    invalidation_reason='ttl_expired',
+                    updated_at=?
+                WHERE status='active'
+                  AND expires_at IS NOT NULL
+                  AND expires_at <= ?
+                """,
+                (current, current, current),
+            )
+            return int(result.rowcount)
+
+    def list_expirable_learning_assets(
+        self,
+        *,
+        before: str,
+        limit: int = 100,
+    ) -> list[sqlite3.Row]:
+        with schema_locked_connection() as conn:
+            return conn.execute(
+                """
+                SELECT *
+                FROM learning_assets
+                WHERE lifecycle IN ('candidate', 'active')
+                  AND updated_at <= ?
+                ORDER BY updated_at ASC, asset_key ASC
+                LIMIT ?
+                """,
+                (before, limit),
+            ).fetchall()
+
+    def record_learning_revocation(
+        self,
+        *,
+        revocation_id: str,
+        asset_key: str,
+        action: str,
+        actor: str,
+        reason: str,
+        replacement_asset_key: str | None,
+        invalidated_packet_count: int,
+        created_at: str | None = None,
+    ) -> None:
+        with self.transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO learning_revocations(
+                  revocation_id, asset_key, action, actor, reason, replacement_asset_key,
+                  invalidated_packet_count, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    revocation_id,
+                    asset_key,
+                    action,
+                    actor,
+                    reason,
+                    replacement_asset_key,
+                    invalidated_packet_count,
+                    created_at or _store_now_iso(),
+                ),
+            )
+
+    def list_learning_revocations(self) -> list[sqlite3.Row]:
+        with schema_locked_connection() as conn:
+            return conn.execute(
+                """
+                SELECT *
+                FROM learning_revocations
+                ORDER BY created_at DESC, revocation_id DESC
+                """
+            ).fetchall()
+
+    def learning_revocation_count(self) -> int:
+        with schema_locked_connection() as conn:
+            row = conn.execute("SELECT COUNT(*) AS count FROM learning_revocations").fetchone()
+            return int(row["count"])
 
     def learning_visibility_counts(self) -> dict[str, int]:
         with schema_locked_connection() as conn:

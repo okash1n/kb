@@ -397,7 +397,7 @@ class EventPipelineTest(unittest.TestCase):
         self.assertEqual(removed["checkpoints"], 1)
         self.assertFalse(old_file.exists())
 
-    def test_schema_version_6_creates_learning_runtime_tables(self) -> None:
+    def test_schema_version_7_creates_learning_runtime_tables(self) -> None:
         with EventStore().transaction() as conn:
             version = conn.execute(
                 "SELECT value FROM schema_meta WHERE key='schema_version'"
@@ -408,7 +408,7 @@ class EventPipelineTest(unittest.TestCase):
                     "SELECT name FROM sqlite_master WHERE type='table'"
                 ).fetchall()
             }
-        self.assertEqual(version["value"], "6")
+        self.assertEqual(version["value"], "7")
         self.assertTrue(
             {
                 "judge_runs",
@@ -420,6 +420,7 @@ class EventPipelineTest(unittest.TestCase):
                 "learning_packets",
                 "learning_packet_assets",
                 "learning_applications",
+                "learning_revocations",
             }
             <= tables
         )
@@ -546,7 +547,7 @@ class EventPipelineTest(unittest.TestCase):
                 row["name"]
                 for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
             }
-        self.assertEqual(version["value"], "6")
+        self.assertEqual(version["value"], "7")
         self.assertEqual(judge["judge_run_key"], "legacy-judge")
         self.assertEqual(candidate["candidate_key"], "legacy-candidate")
         self.assertEqual(review["review_id"], "legacy-review")
