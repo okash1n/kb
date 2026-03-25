@@ -579,6 +579,21 @@ def cmd_doctor(args: argparse.Namespace) -> None:
     print(run_doctor(no_version_check=args.no_version_check))
 
 
+def _version_text() -> str:
+    """Return a human-readable kb-mcp version string."""
+    from kb_mcp.update import current_version
+
+    version = current_version()
+    if version:
+        return f"kb-mcp {version}"
+    return "kb-mcp (dev)"
+
+
+def cmd_version(_args: argparse.Namespace) -> None:
+    """Print the current kb-mcp version."""
+    print(_version_text())
+
+
 def _check_mcp_registered(tool: str, repo: str | None = None) -> tuple[bool, str]:
     """Check if kb MCP server is registered for a given tool."""
     import json as _json
@@ -656,7 +671,14 @@ def build_parser() -> argparse.ArgumentParser:
         prog="kb-mcp",
         description="kb — AI cross-context synchronization layer",
     )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=_version_text(),
+    )
     sub = parser.add_subparsers(dest="command")
+
+    sub.add_parser("version", help="Print kb-mcp version")
 
     # serve
     sub.add_parser("serve", help="Start MCP server (stdio)")
@@ -779,6 +801,8 @@ def main() -> None:
             parser.parse_args(["session", "--help"])
     elif args.command == "doctor":
         cmd_doctor(args)
+    elif args.command == "version":
+        cmd_version(args)
     else:
         parser.print_help()
         sys.exit(1)

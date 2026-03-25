@@ -11,6 +11,16 @@
 
 - まだ未整理
 
+## [0.5.1] - 2026-03-25
+
+### Added
+
+- `kb-mcp --version` と `kb-mcp version` で現在バージョンを確認できるようにした
+
+### Changed
+
+- package metadata が無い開発実行では `kb-mcp (dev)` を返すようにした
+
 ## [0.5.0] - 2026-03-25
 
 ### Added
