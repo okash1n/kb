@@ -1,6 +1,7 @@
 """Save tools — kb_adr, kb_gap, kb_knowledge, kb_session, kb_draft."""
 
 from pathlib import Path
+from typing import Callable
 
 from kb_mcp.config import inbox_dir, kb_data_root, projects_dir, safe_resolve
 from kb_mcp.events.request_context import REQUEST_CONTEXT
@@ -13,6 +14,8 @@ from kb_mcp.note import (
     slugify,
 )
 from kb_mcp.resolver import resolve_project
+
+SaveFunc = Callable[..., str]
 
 
 def _resolve_or_error(
@@ -54,11 +57,13 @@ def _write_note(
     related: list[str] | None = None,
     status: str | None = None,
     extra_fields: dict[str, str] | None = None,
+    fixed_ulid: str | None = None,
+    fixed_filename: str | None = None,
 ) -> str:
     """Write a note file and return confirmation."""
     d = _ensure_project_dir(project, subdir)
-    ulid = generate_ulid()
-    filename = build_filename(slug=slugify(slug), ulid=ulid)
+    ulid = fixed_ulid or generate_ulid()
+    filename = fixed_filename or build_filename(slug=slugify(slug), ulid=ulid)
     context = REQUEST_CONTEXT.get()
     note_extra_fields = dict(extra_fields or {})
     if context and context.get("save_request_id"):
@@ -98,6 +103,8 @@ def kb_adr(
     related: list[str] | None = None,
     status: str = "accepted",
     extra_fields: dict[str, str] | None = None,
+    fixed_ulid: str | None = None,
+    fixed_filename: str | None = None,
 ) -> str:
     """Save an Architecture Decision Record.
 
@@ -121,6 +128,8 @@ def kb_adr(
         related=related,
         status=status,
         extra_fields=extra_fields,
+        fixed_ulid=fixed_ulid,
+        fixed_filename=fixed_filename,
     )
 
 
@@ -136,6 +145,8 @@ def kb_gap(
     tags: list[str] | None = None,
     related: list[str] | None = None,
     extra_fields: dict[str, str] | None = None,
+    fixed_ulid: str | None = None,
+    fixed_filename: str | None = None,
 ) -> str:
     """Save a gap record — what the user actually wanted vs what AI did.
 
@@ -158,6 +169,8 @@ def kb_gap(
         tags=tags,
         related=related,
         extra_fields=extra_fields,
+        fixed_ulid=fixed_ulid,
+        fixed_filename=fixed_filename,
     )
 
 
@@ -173,6 +186,8 @@ def kb_knowledge(
     tags: list[str] | None = None,
     related: list[str] | None = None,
     extra_fields: dict[str, str] | None = None,
+    fixed_ulid: str | None = None,
+    fixed_filename: str | None = None,
 ) -> str:
     """Save a knowledge note — something learned during development.
 
@@ -192,6 +207,8 @@ def kb_knowledge(
         tags=tags,
         related=related,
         extra_fields=extra_fields,
+        fixed_ulid=fixed_ulid,
+        fixed_filename=fixed_filename,
     )
 
 
@@ -206,6 +223,8 @@ def kb_session(
     tags: list[str] | None = None,
     related: list[str] | None = None,
     extra_fields: dict[str, str] | None = None,
+    fixed_ulid: str | None = None,
+    fixed_filename: str | None = None,
 ) -> str:
     """Save a session log — record of a working session.
 
@@ -215,8 +234,8 @@ def kb_session(
     """
     project_name, repo_id = _resolve_or_error(project, cwd, repo)
     d = _ensure_project_dir(project_name, "session-log")
-    ulid = generate_ulid()
-    filename = build_session_filename(ulid=ulid)
+    ulid = fixed_ulid or generate_ulid()
+    filename = fixed_filename or build_session_filename(ulid=ulid)
     context = REQUEST_CONTEXT.get()
     note_extra_fields = dict(extra_fields or {})
     if context and context.get("save_request_id"):
@@ -294,6 +313,57 @@ def kb_draft(
     if git_msg:
         msg += f"\n{git_msg}"
     return msg
+
+
+def save_note_by_type(
+    *,
+    note_type: str,
+    summary: str,
+    content: str,
+    ai_tool: str,
+    ai_client: str | None = None,
+    project: str | None = None,
+    cwd: str | None = None,
+    repo: str | None = None,
+    slug: str | None = None,
+    tags: list[str] | None = None,
+    related: list[str] | None = None,
+    status: str | None = None,
+    extra_fields: dict[str, str] | None = None,
+    fixed_ulid: str | None = None,
+    fixed_filename: str | None = None,
+) -> str:
+    kwargs = {
+        "summary": summary,
+        "content": content,
+        "ai_tool": ai_tool,
+        "ai_client": ai_client,
+        "project": project,
+        "cwd": cwd,
+        "repo": repo,
+        "tags": tags,
+        "related": related,
+        "extra_fields": extra_fields,
+        "fixed_ulid": fixed_ulid,
+        "fixed_filename": fixed_filename,
+    }
+    save_func: SaveFunc
+    if note_type == "adr":
+        save_func = kb_adr
+        kwargs["slug"] = slug or summary
+        if status is not None:
+            kwargs["status"] = status
+    elif note_type == "gap":
+        save_func = kb_gap
+        kwargs["slug"] = slug or summary
+    elif note_type == "knowledge":
+        save_func = kb_knowledge
+        kwargs["slug"] = slug or summary
+    elif note_type == "session-log":
+        save_func = kb_session
+    else:
+        raise ValueError(f"unsupported note_type: {note_type}")
+    return save_func(**kwargs)
 
 
 def _update_request_context(context: dict | None, *, ulid: str, filepath: Path, note_type: str) -> None:

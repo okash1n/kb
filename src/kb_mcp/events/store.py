@@ -83,15 +83,41 @@ class EventStore:
                 """,
                 (logical_key, aggregate_version, sink_name, receipt, utc_now_iso()),
             )
-            remaining = conn.execute(
+            logical = conn.execute(
                 """
-                SELECT COUNT(*) AS count
-                FROM outbox
-                WHERE logical_key=? AND aggregate_version=? AND status!='applied'
+                SELECT aggregate_type
+                FROM logical_events
+                WHERE logical_key=? AND aggregate_version=?
                 """,
                 (logical_key, aggregate_version),
             ).fetchone()
-            if int(remaining["count"]) == 0:
+            if logical is not None and str(logical["aggregate_type"]) == "review_materialization":
+                completed = conn.execute(
+                    """
+                    SELECT COUNT(DISTINCT sink_name) AS count
+                    FROM outbox
+                    WHERE logical_key=? AND aggregate_version=? AND status='applied'
+                      AND sink_name IN (?, ?)
+                    """,
+                    (
+                        logical_key,
+                        aggregate_version,
+                        _REVIEW_MATERIALIZATION_SINKS[0],
+                        _REVIEW_MATERIALIZATION_SINKS[1],
+                    ),
+                ).fetchone()
+                can_finalize = int(completed["count"]) == len(_REVIEW_MATERIALIZATION_SINKS)
+            else:
+                remaining = conn.execute(
+                    """
+                    SELECT COUNT(*) AS count
+                    FROM outbox
+                    WHERE logical_key=? AND aggregate_version=? AND status!='applied'
+                    """,
+                    (logical_key, aggregate_version),
+                ).fetchone()
+                can_finalize = int(remaining["count"]) == 0
+            if can_finalize:
                 conn.execute(
                     """
                     UPDATE logical_events
@@ -671,6 +697,174 @@ class EventStore:
                 (status, _store_now_iso(), materialization_key, lease_owner, lease_epoch),
             )
             return result.rowcount > 0
+
+    def mark_materialization_repair_pending(
+        self,
+        *,
+        materialization_key: str,
+        expected_lease_epoch: int,
+        last_error: str | None = None,
+    ) -> bool:
+        with self.transaction() as conn:
+            row = conn.execute(
+                """
+                SELECT status, lease_epoch
+                FROM materialization_records
+                WHERE materialization_key=?
+                LIMIT 1
+                """,
+                (materialization_key,),
+            ).fetchone()
+            if row is None or str(row["status"]) == "applied":
+                return False
+            if int(row["lease_epoch"]) > expected_lease_epoch:
+                return False
+            result = conn.execute(
+                """
+                UPDATE materialization_records
+                SET status='repair_pending',
+                    lease_owner=NULL,
+                    lease_expires_at=NULL,
+                    last_error=?,
+                    updated_at=?
+                WHERE materialization_key=?
+                  AND status!='applied'
+                  AND lease_epoch<=?
+                """,
+                ((last_error or "")[:500] or None, _store_now_iso(), materialization_key, expected_lease_epoch),
+            )
+            return result.rowcount > 0
+
+    def finalize_materialization_record(
+        self,
+        *,
+        materialization_key: str,
+        lease_owner: str,
+        lease_epoch: int,
+        candidate_key: str,
+        note_id: str | None,
+        note_path: str | None,
+        promotion_key: str | None,
+    ) -> bool:
+        with self.transaction() as conn:
+            result = conn.execute(
+                """
+                UPDATE materialization_records
+                SET status='applied',
+                    note_id=COALESCE(?, note_id),
+                    note_path=COALESCE(?, note_path),
+                    promotion_key=COALESCE(?, promotion_key),
+                    lease_owner=NULL,
+                    lease_expires_at=NULL,
+                    updated_at=?
+                WHERE materialization_key=? AND lease_owner=? AND lease_epoch=?
+                """,
+                (
+                    note_id,
+                    note_path,
+                    promotion_key,
+                    _store_now_iso(),
+                    materialization_key,
+                    lease_owner,
+                    lease_epoch,
+                ),
+            )
+            if result.rowcount == 0:
+                return False
+            now = utc_now_iso()
+            conn.execute(
+                """
+                UPDATE promotion_candidates
+                SET status='materialized', resolved_at=COALESCE(resolved_at, ?), updated_at=?
+                WHERE candidate_key=?
+                """,
+                (now, now, candidate_key),
+            )
+            return True
+
+    def reserve_materialization_note_target(
+        self,
+        *,
+        materialization_key: str,
+        lease_owner: str,
+        lease_epoch: int,
+        note_id: str,
+        note_path: str,
+    ) -> sqlite3.Row | None:
+        with self.transaction() as conn:
+            result = conn.execute(
+                """
+                UPDATE materialization_records
+                SET note_id=CASE
+                      WHEN note_id IS NULL OR note_path IS NULL THEN ?
+                      ELSE note_id
+                    END,
+                    note_path=CASE
+                      WHEN note_id IS NULL OR note_path IS NULL THEN ?
+                      ELSE note_path
+                    END,
+                    updated_at=?
+                WHERE materialization_key=? AND lease_owner=? AND lease_epoch=?
+                """,
+                (
+                    note_id,
+                    note_path,
+                    _store_now_iso(),
+                    materialization_key,
+                    lease_owner,
+                    lease_epoch,
+                ),
+            )
+            if result.rowcount == 0:
+                return None
+            return conn.execute(
+                "SELECT * FROM materialization_records WHERE materialization_key=?",
+                (materialization_key,),
+            ).fetchone()
+
+    def mark_candidate_materialized(self, candidate_key: str, *, resolved_at: str | None = None) -> None:
+        with self.transaction() as conn:
+            now = resolved_at or utc_now_iso()
+            conn.execute(
+                """
+                UPDATE promotion_candidates
+                SET status='materialized', resolved_at=COALESCE(resolved_at, ?), updated_at=?
+                WHERE candidate_key=?
+                """,
+                (now, now, candidate_key),
+            )
+
+    def get_promotion_candidate(self, candidate_key: str) -> sqlite3.Row | None:
+        with self.transaction() as conn:
+            return conn.execute(
+                "SELECT * FROM promotion_candidates WHERE candidate_key=?",
+                (candidate_key,),
+            ).fetchone()
+
+    def latest_candidate_review(self, candidate_key: str) -> sqlite3.Row | None:
+        with self.transaction() as conn:
+            return conn.execute(
+                """
+                SELECT *
+                FROM candidate_reviews
+                WHERE candidate_key=?
+                ORDER BY review_seq DESC
+                LIMIT 1
+                """,
+                (candidate_key,),
+            ).fetchone()
+
+    def get_candidate_review(self, candidate_key: str, review_seq: int) -> sqlite3.Row | None:
+        with self.transaction() as conn:
+            return conn.execute(
+                """
+                SELECT *
+                FROM candidate_reviews
+                WHERE candidate_key=? AND review_seq=?
+                LIMIT 1
+                """,
+                (candidate_key, review_seq),
+            ).fetchone()
 
     def _upsert_materialization_record_conn(
         self,

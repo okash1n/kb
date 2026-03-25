@@ -1317,6 +1317,107 @@ class EventPipelineTest(unittest.TestCase):
             )
         )
 
+    def test_mark_materialization_repair_pending_clears_stale_lease(self) -> None:
+        store = EventStore()
+        store.upsert_judge_run(
+            judge_run_key="judge-materialize-9",
+            partition_key="partition-9",
+            window_id="window-materialize-9",
+            start_ordinal=1,
+            end_ordinal=2,
+            window_index=1,
+            status="judged",
+            prompt_version="v1",
+        )
+        store.upsert_promotion_candidate(
+            candidate_key="cand-materialize-9",
+            window_id="window-materialize-9",
+            judge_run_key="judge-materialize-9",
+            label="gap",
+            status="accepted",
+            score=0.9,
+            slice_fingerprint="window-materialize-9",
+            reasons=["user_correction"],
+            payload={"window_id": "window-materialize-9"},
+        )
+        store.upsert_materialization_record(
+            materialization_key="mat-9",
+            candidate_key="cand-materialize-9",
+            review_seq=1,
+            judge_run_key="judge-materialize-9",
+            window_id="window-materialize-9",
+            materialized_label="gap",
+            effective_label="gap",
+            status="applying",
+            payload={"candidate_key": "cand-materialize-9"},
+            lease_owner="worker-a",
+            lease_expires_at="2026-03-25T00:10:00+00:00",
+            lease_epoch=1,
+        )
+
+        self.assertTrue(
+            store.mark_materialization_repair_pending(
+                materialization_key="mat-9",
+                expected_lease_epoch=1,
+                last_error="lease lost during apply",
+            )
+        )
+        row = store.get_materialization_record("mat-9")
+        self.assertEqual(row["status"], "repair_pending")
+        self.assertIsNone(row["lease_owner"])
+        self.assertIsNone(row["lease_expires_at"])
+        self.assertEqual(row["last_error"], "lease lost during apply")
+
+    def test_mark_materialization_repair_pending_does_not_override_newer_lease(self) -> None:
+        store = EventStore()
+        store.upsert_judge_run(
+            judge_run_key="judge-materialize-10",
+            partition_key="partition-10",
+            window_id="window-materialize-10",
+            start_ordinal=1,
+            end_ordinal=2,
+            window_index=1,
+            status="judged",
+            prompt_version="v1",
+        )
+        store.upsert_promotion_candidate(
+            candidate_key="cand-materialize-10",
+            window_id="window-materialize-10",
+            judge_run_key="judge-materialize-10",
+            label="gap",
+            status="accepted",
+            score=0.9,
+            slice_fingerprint="window-materialize-10",
+            reasons=["user_correction"],
+            payload={"window_id": "window-materialize-10"},
+        )
+        store.upsert_materialization_record(
+            materialization_key="mat-10",
+            candidate_key="cand-materialize-10",
+            review_seq=1,
+            judge_run_key="judge-materialize-10",
+            window_id="window-materialize-10",
+            materialized_label="gap",
+            effective_label="gap",
+            status="applying",
+            payload={"candidate_key": "cand-materialize-10"},
+            lease_owner="worker-b",
+            lease_expires_at="2026-03-25T00:10:00+00:00",
+            lease_epoch=2,
+        )
+
+        self.assertFalse(
+            store.mark_materialization_repair_pending(
+                materialization_key="mat-10",
+                expected_lease_epoch=1,
+                last_error="stale worker cleanup",
+            )
+        )
+        row = store.get_materialization_record("mat-10")
+        self.assertEqual(row["status"], "applying")
+        self.assertEqual(row["lease_owner"], "worker-b")
+        self.assertEqual(row["lease_epoch"], 2)
+
     def test_mark_sink_succeeded_ignores_stale_dead_lettered_row(self) -> None:
         store = EventStore()
         store.append(
@@ -1372,6 +1473,72 @@ class EventPipelineTest(unittest.TestCase):
             ).fetchone()
         self.assertEqual(outbox["status"], "dead_letter")
         self.assertEqual(sink_run["count"], 0)
+
+    def test_mark_sink_succeeded_does_not_finalize_review_materialization_when_sink_missing(self) -> None:
+        store = EventStore()
+        store.upsert_judge_run(
+            judge_run_key="judge-finalize-gap",
+            partition_key="partition-finalize-gap",
+            window_id="window-finalize-gap",
+            start_ordinal=1,
+            end_ordinal=2,
+            window_index=1,
+            status="judged",
+            prompt_version="v1",
+        )
+        store.upsert_promotion_candidate(
+            candidate_key="cand-finalize-gap",
+            window_id="window-finalize-gap",
+            judge_run_key="judge-finalize-gap",
+            label="gap",
+            status="accepted",
+            score=0.9,
+            slice_fingerprint="window-finalize-gap",
+            reasons=["user_correction"],
+            payload={"window_id": "window-finalize-gap"},
+        )
+        store.enqueue_materialization_resolution(
+            candidate_key="cand-finalize-gap",
+            review_seq=1,
+            effective_label="gap",
+            materialization_key="mat-finalize-gap",
+            judge_run_key="judge-finalize-gap",
+            window_id="window-finalize-gap",
+            payload={"candidate_key": "cand-finalize-gap"},
+        )
+        with store.transaction() as conn:
+            row = conn.execute(
+                """
+                SELECT id, logical_key, aggregate_version, sink_name
+                FROM outbox
+                WHERE logical_key='materialize:cand-finalize-gap:gap'
+                ORDER BY sink_name
+                LIMIT 1
+                """
+            ).fetchone()
+            conn.execute(
+                """
+                DELETE FROM outbox
+                WHERE logical_key='materialize:cand-finalize-gap:gap'
+                  AND sink_name='promotion_applier'
+                """
+            )
+        store.mark_sink_succeeded(
+            row_id=row["id"],
+            logical_key=row["logical_key"],
+            aggregate_version=row["aggregate_version"],
+            sink_name=row["sink_name"],
+            receipt="planner-only",
+        )
+        with store.transaction() as conn:
+            logical = conn.execute(
+                """
+                SELECT status
+                FROM logical_events
+                WHERE logical_key='materialize:cand-finalize-gap:gap'
+                """
+            ).fetchone()
+        self.assertEqual(logical["status"], "ready")
 
     def test_upsert_and_claim_judge_run(self) -> None:
         store = EventStore()
