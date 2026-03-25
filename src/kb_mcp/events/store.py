@@ -181,8 +181,11 @@ def _merge_envelope(conn: sqlite3.Connection, envelope: EventEnvelope) -> tuple[
 
     if envelope.aggregate_type == "session":
         if envelope.event_name == "session_ended":
-            if envelope.correlation_id:
+            if envelope.source_layer == "session_launcher" and envelope.correlation_id:
                 status = "pending_finalization"
+            elif envelope.source_layer == "client_hook":
+                status = "collecting"
+                queued = ["checkpoint_writer"]
             else:
                 status = "collecting"
                 debug_only_reason = "missing_correlation_id"

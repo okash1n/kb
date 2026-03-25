@@ -11,6 +11,19 @@
 
 - まだ未整理
 
+## [0.4.1] - 2026-03-25
+
+### Fixed
+
+- Codex `Stop` hook の manual install 出力を実 schema に合わせ、`doctor` でも `hooks.json` と `config.toml` を確認するよう修正
+- Codex hook wrapper が `stdout` に dispatch 結果 JSON を流して `Stop running, failed` になる不具合を修正
+- Codex transcript `.jsonl` から event log 全体ではなく会話メッセージだけを抜粋するように修正
+- `client_hook` の `session_ended` で毎回 session-log を作っていた挙動をやめ、checkpoint のみに変更
+
+### Changed
+
+- session-log の本文生成を、人が読める会話抜粋ベースに寄せた
+
 ## [0.4.0] - 2026-03-25
 
 ### Added

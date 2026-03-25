@@ -14,6 +14,7 @@ from kb_mcp.install_hooks import (
     codex_home,
     copilot_home,
     hooks_lib_dir,
+    inspect_codex_hook_state,
 )
 
 
@@ -82,6 +83,8 @@ def _tool_checks() -> list[str]:
     lines.append(f"  Codex home: {codex_dir or 'invalid CODEX_HOME'} {'✓' if codex_dir else '✗'}")
     mcp_ok, mcp_detail = check_mcp_registered("codex")
     lines.append(f"  Codex MCP: {mcp_detail} {'✓' if mcp_ok else '✗'}")
+    codex_hooks_ok, codex_hooks_detail = check_codex_hooks()
+    lines.append(f"  Codex hooks: {codex_hooks_detail} {'✓' if codex_hooks_ok else '✗'}")
 
     claude_mcp = claude_config_json()
     lines.append(f"  Claude MCP config: {claude_mcp} {'✓' if claude_mcp.exists() else '✗'}")
@@ -122,3 +125,26 @@ def check_mcp_registered(tool: str) -> tuple[bool, str]:
         text = path.read_text(encoding="utf-8")
         return ("[mcp_servers.kb]" in text, f"registered in {path}" if "[mcp_servers.kb]" in text else f"not registered in {path}")
     return False, "unknown tool"
+
+
+def check_codex_hooks() -> tuple[bool, str]:
+    """Check Codex hook config in config.toml and hooks.json."""
+    state = inspect_codex_hook_state()
+    home = state["home"]
+    if home is None:
+        return False, "invalid CODEX_HOME"
+    hooks_path = state["hooks_path"]
+    config_path = state["config_path"]
+    if not state["hooks_exists"]:
+        return False, f"{hooks_path} not found"
+    if state["hooks_unreadable"]:
+        return False, f"{hooks_path} unreadable"
+    if not state["hook_registered"]:
+        return False, f"codex-session-end.sh not registered in {hooks_path}"
+    if not state["config_exists"]:
+        return True, f"registered in {hooks_path}; {config_path} not found"
+    if state["config_unreadable"]:
+        return True, f"registered in {hooks_path}; {config_path} unreadable"
+    if state["feature_enabled"]:
+        return True, f"registered in {hooks_path}; codex_hooks enabled in {config_path}"
+    return True, f"registered in {hooks_path}; codex_hooks flag not found in {config_path}"

@@ -4,6 +4,7 @@ import os
 import stat
 import tempfile
 import unittest
+import json
 from pathlib import Path
 
 import yaml
@@ -53,14 +54,33 @@ class EventPipelineTest(unittest.TestCase):
             "summary": "Finished a session",
             "content": "Body from hook payload",
         }
-        store.append(normalize_event(tool="codex", client="codex-cli", layer="client_hook", event="session_started", payload=payload))
-        store.append(normalize_event(tool="codex", client="codex-cli", layer="client_hook", event="session_ended", payload=payload))
+        store.append(normalize_event(tool="codex", client="codex-cli", layer="session_launcher", event="session_started", payload=payload))
+        store.append(normalize_event(tool="codex", client="codex-cli", layer="session_launcher", event="process_exit", payload={**payload, "exit_code": 0}))
+        store.append(normalize_event(tool="codex", client="codex-cli", layer="session_launcher", event="session_ended", payload=payload))
         result = run_once(maintenance=True)
         self.assertGreaterEqual(result["applied"], 1)
         files = sorted((self.vault / "projects" / self.project / "session-log").glob("*.md"))
         self.assertEqual(len(files), 1)
         mode = files[0].stat().st_mode
         self.assertFalse(mode & stat.S_IWUSR)
+
+    def test_hook_session_end_writes_checkpoint_without_finalizing_note(self) -> None:
+        store = EventStore()
+        payload = {
+            "project": self.project,
+            "cwd": str(self.vault),
+            "session_id": "session-hook-only",
+            "summary": "Turn finished",
+            "content": "Short turn excerpt",
+        }
+        store.append(normalize_event(tool="codex", client="codex-cli", layer="client_hook", event="session_started", payload=payload))
+        store.append(normalize_event(tool="codex", client="codex-cli", layer="client_hook", event="session_ended", payload=payload))
+        result = run_once(maintenance=True)
+        self.assertGreaterEqual(result["applied"], 1)
+        files = sorted((self.vault / "projects" / self.project / "session-log").glob("*.md"))
+        self.assertEqual(len(files), 0)
+        checkpoints = sorted((self.config_dir / "runtime" / "events" / "checkpoints").glob("*.json"))
+        self.assertEqual(len(checkpoints), 1)
 
     def test_error_event_writes_incident_draft(self) -> None:
         store = EventStore()
@@ -111,3 +131,70 @@ class EventPipelineTest(unittest.TestCase):
             },
         )
         self.assertIn("important transcript line", envelope.content_excerpt or "")
+
+    def test_codex_jsonl_excerpt_extracts_messages_only(self) -> None:
+        transcript = self.vault / "codex.jsonl"
+        transcript.write_text(
+            "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "timestamp": "2026-03-25T00:00:00Z",
+                            "type": "event_msg",
+                            "payload": {"type": "user_message", "message": "最初の質問"},
+                        },
+                        ensure_ascii=False,
+                    ),
+                    json.dumps(
+                        {
+                            "timestamp": "2026-03-25T00:00:01Z",
+                            "type": "response_item",
+                            "payload": {
+                                "type": "function_call_output",
+                                "output": '{"status":"ok"}',
+                            },
+                        },
+                        ensure_ascii=False,
+                    ),
+                    json.dumps(
+                        {
+                            "timestamp": "2026-03-25T00:00:02Z",
+                            "type": "event_msg",
+                            "payload": {"type": "agent_message", "message": "途中の返答"},
+                        },
+                        ensure_ascii=False,
+                    ),
+                    json.dumps(
+                        {
+                            "timestamp": "2026-03-25T00:00:03Z",
+                            "type": "response_item",
+                            "payload": {
+                                "type": "message",
+                                "role": "assistant",
+                                "content": [{"type": "output_text", "text": "最後の返答"}],
+                            },
+                        },
+                        ensure_ascii=False,
+                    ),
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        envelope = normalize_event(
+            tool="codex",
+            client="codex-cli",
+            layer="client_hook",
+            event="session_ended",
+            payload={
+                "session_id": "session-4",
+                "summary": "session ended",
+                "transcript_path": str(transcript),
+            },
+        )
+
+        self.assertIn("最初の質問", envelope.content_excerpt or "")
+        self.assertIn("途中の返答", envelope.content_excerpt or "")
+        self.assertIn("最後の返答", envelope.content_excerpt or "")
+        self.assertNotIn("function_call_output", envelope.content_excerpt or "")

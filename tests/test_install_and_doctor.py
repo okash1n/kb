@@ -13,7 +13,7 @@ import yaml
 from kb_mcp.config import load_config
 from kb_mcp.events.scheduler import scheduler_marker_path
 from kb_mcp.doctor import run_doctor
-from kb_mcp.install_hooks import install_claude, install_copilot
+from kb_mcp.install_hooks import install_claude, install_codex, install_copilot
 
 
 class InstallAndDoctorTest(unittest.TestCase):
@@ -59,11 +59,89 @@ class InstallAndDoctorTest(unittest.TestCase):
         self.assertTrue(copilot_config.exists())
 
     @mock.patch("shutil.which", return_value="/tmp/kb-mcp")
+    def test_install_codex_prints_manual_steps(self, _which: mock.Mock) -> None:
+        result = install_codex(execute=False)
+        self.assertIn("Current status:", result)
+        self.assertIn("Next step:", result)
+        self.assertIn("Edit:", result)
+        self.assertIn("hooks.json", result)
+        self.assertIn('"hooks"', result)
+        self.assertIn('"type": "command"', result)
+        self.assertIn("codex-session-end.sh", result)
+
+    @mock.patch("shutil.which", return_value="/tmp/kb-mcp")
+    def test_install_codex_reports_existing_state(self, _which: mock.Mock) -> None:
+        codex_home = Path(os.environ["HOME"]) / ".codex"
+        codex_home.mkdir(parents=True, exist_ok=True)
+        (codex_home / "hooks.json").write_text(
+            json.dumps(
+                {
+                    "hooks": {
+                        "Stop": [
+                            {
+                                "hooks": [
+                                    {
+                                        "type": "command",
+                                        "command": "/tmp/codex-session-end.sh",
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        (codex_home / "config.toml").write_text("[features]\ncodex_hooks = true\n", encoding="utf-8")
+
+        result = install_codex(execute=False)
+
+        self.assertIn("Codex hook already configured.", result)
+        self.assertIn("installed", result)
+        self.assertIn("enabled", result)
+
+    @mock.patch("shutil.which", return_value="/tmp/kb-mcp")
     def test_doctor_reports_event_db_and_tooling(self, _which: mock.Mock) -> None:
         install_claude(execute=True)
+        codex_home = Path(os.environ["HOME"]) / ".codex"
+        codex_wrapper = Path(os.environ["HOME"]) / ".local" / "lib" / "kb-mcp" / "hooks" / "codex-session-end.sh"
+        codex_home.mkdir(parents=True, exist_ok=True)
+        (codex_home / "hooks.json").write_text(
+            json.dumps(
+                {
+                    "hooks": {
+                        "Stop": [
+                            {
+                                "hooks": [
+                                    {
+                                        "type": "command",
+                                        "command": str(codex_wrapper),
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        (codex_home / "config.toml").write_text(
+            '[features]\ncodex_hooks = true\n[mcp_servers.kb]\ncommand = "kb-mcp"\nargs = ["serve"]\n',
+            encoding="utf-8",
+        )
         report = run_doctor(no_version_check=True)
         self.assertIn("Event DB", report)
         self.assertIn("Claude hooks", report)
+        self.assertIn("Codex hooks", report)
+
+    @mock.patch("shutil.which", return_value="/tmp/kb-mcp")
+    def test_install_codex_wrapper_suppresses_stdout(self, _which: mock.Mock) -> None:
+        install_codex(execute=False)
+        wrapper = Path(os.environ["HOME"]) / ".local" / "lib" / "kb-mcp" / "hooks" / "codex-session-end.sh"
+        content = wrapper.read_text(encoding="utf-8")
+        self.assertIn(">/dev/null", content)
 
     @mock.patch("shutil.which", return_value="/tmp/kb-mcp")
     def test_dry_run_does_not_install_scheduler_marker(self, _which: mock.Mock) -> None:
