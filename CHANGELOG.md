@@ -7,6 +7,16 @@
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-03-26
+
+### Added
+
+- `learning.metrics` と doctor outcome lines を追加し、same-gap recurrence / knowledge re-query / ADR re-discussion / cross-client consistency を runtime outcome として観測できるようにした
+
+### Changed
+
+- pipeline health 指標とは別に learning outcome 指標を集計し、doctor で分離して見えるようにした
+
 ## [0.14.0] - 2026-03-26
 
 ### Added

@@ -159,6 +159,12 @@ def _runtime_checks() -> list[str]:
     }
     learning_packet_counts: dict[str, int] | None = {"packets": 0, "applications": 0}
     learning_revocation_count: int | None = 0
+    learning_outcomes: dict[str, int] | None = {
+        "same_gap_recurrence": 0,
+        "knowledge_requery": 0,
+        "adr_rediscussion": 0,
+        "cross_client_consistency": 0,
+    }
     judge_metrics_error = None
     runtime_metrics_error = None
     fastpath_metrics_error = None
@@ -174,6 +180,7 @@ def _runtime_checks() -> list[str]:
             learning_visibility_counts = store.learning_visibility_counts()
             learning_packet_counts = store.learning_packet_counts()
             learning_revocation_count = store.learning_revocation_count()
+            learning_outcomes = store.learning_outcome_metrics()
         except sqlite3.Error as exc:
             runtime_metrics_error = exc.__class__.__name__
             judge_metrics_error = exc.__class__.__name__
@@ -182,6 +189,7 @@ def _runtime_checks() -> list[str]:
             learning_visibility_counts = None
             learning_packet_counts = None
             learning_revocation_count = None
+            learning_outcomes = None
     if materialization_counts is None:
         materialization_lines = [
             _fmt("Materialization records", runtime_metrics_error or "error", False),
@@ -201,12 +209,14 @@ def _runtime_checks() -> list[str]:
         or learning_visibility_counts is None
         or learning_packet_counts is None
         or learning_revocation_count is None
+        or learning_outcomes is None
     ):
         learning_lines = [
             _fmt("Learning assets", runtime_metrics_error or "error", False),
             _fmt("Learning packets", runtime_metrics_error or "error", False),
             _fmt("Learning applications", runtime_metrics_error or "error", False),
             _fmt("Learning revocations", runtime_metrics_error or "error", False),
+            _fmt("Learning outcomes", runtime_metrics_error or "error", False),
         ]
     else:
         learning_lines = [
@@ -219,6 +229,10 @@ def _runtime_checks() -> list[str]:
             _fmt_info("Learning active assets", str(learning_visibility_counts["active"])),
             _fmt_info("Learning held assets", str(learning_visibility_counts["held"])),
             _fmt_info("Learning retractable assets", str(learning_visibility_counts["retractable"])),
+            _fmt_info("Learning same-gap recurrence", str(learning_outcomes["same_gap_recurrence"])),
+            _fmt_info("Learning knowledge re-query", str(learning_outcomes["knowledge_requery"])),
+            _fmt_info("Learning ADR re-discussion", str(learning_outcomes["adr_rediscussion"])),
+            _fmt_info("Learning cross-client consistency", str(learning_outcomes["cross_client_consistency"])),
         ]
     fastpath_backend = fastpath_backend_status()
     try:
