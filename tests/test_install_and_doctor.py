@@ -236,9 +236,78 @@ class InstallAndDoctorTest(unittest.TestCase):
         self.assertIn("Judge runs pending: 1", report)
         self.assertIn("Review candidates pending: 0", report)
         self.assertIn("Candidate reviews: 1", report)
+        self.assertIn("Materialization records: 0", report)
         self.assertIn("Judge failures: 1 ✗", report)
         self.assertIn("Judge metrics: ok ✓", report)
         self.assertIn("Runtime metrics: ok ✓", report)
+
+    def test_doctor_reports_materialization_runtime_counts(self) -> None:
+        store = EventStore()
+        store.upsert_judge_run(
+            judge_run_key="judge-materialize",
+            partition_key="project:demo",
+            window_id="window-materialize",
+            start_ordinal=1,
+            end_ordinal=2,
+            window_index=1,
+            status="judged",
+            prompt_version="judge-review-candidates.v1",
+            labels=[],
+            decision={},
+        )
+        store.upsert_promotion_candidate(
+            candidate_key="candidate-materialize",
+            window_id="window-materialize",
+            judge_run_key="judge-materialize",
+            label="gap",
+            status="accepted",
+            score=0.9,
+            slice_fingerprint="fp-materialize",
+            reasons=["user_correction"],
+            payload={"window_id": "window-materialize"},
+        )
+        store.upsert_materialization_record(
+            materialization_key="mat-repair",
+            candidate_key="candidate-materialize",
+            review_seq=1,
+            judge_run_key="judge-materialize",
+            window_id="window-materialize",
+            materialized_label="gap",
+            effective_label="gap",
+            status="repair_pending",
+            payload={"candidate_key": "candidate-materialize"},
+        )
+        store.upsert_materialization_record(
+            materialization_key="mat-failed",
+            candidate_key="candidate-materialize",
+            review_seq=2,
+            judge_run_key="judge-materialize",
+            window_id="window-materialize",
+            materialized_label="gap",
+            effective_label="gap",
+            status="failed",
+            payload={"candidate_key": "candidate-materialize"},
+        )
+        store.upsert_materialization_record(
+            materialization_key="mat-expired",
+            candidate_key="candidate-materialize",
+            review_seq=3,
+            judge_run_key="judge-materialize",
+            window_id="window-materialize",
+            materialized_label="gap",
+            effective_label="gap",
+            status="applying",
+            payload={"candidate_key": "candidate-materialize"},
+            lease_owner="worker-1",
+            lease_expires_at="2026-03-25T00:00:00+00:00",
+        )
+
+        report = run_doctor(no_version_check=True)
+
+        self.assertIn("Materialization records: 3", report)
+        self.assertIn("Materializations repair pending: 1 ✗", report)
+        self.assertIn("Materializations failed: 1 ✗", report)
+        self.assertIn("Materializations applying expired: 1 ✗", report)
 
     @mock.patch("kb_mcp.doctor.EventStore")
     def test_doctor_handles_judge_metric_query_failure(self, store_cls: mock.Mock) -> None:
@@ -253,6 +322,8 @@ class InstallAndDoctorTest(unittest.TestCase):
 
         self.assertIn("Judge metrics: OperationalError ✗", report)
         self.assertIn("Runtime metrics: OperationalError ✗", report)
+        self.assertIn("Materialization records: OperationalError ✗", report)
+        self.assertIn("Materializations repair pending: OperationalError ✗", report)
 
     @mock.patch("shutil.which", return_value="/tmp/kb-mcp")
     def test_install_codex_wrapper_suppresses_stdout(self, _which: mock.Mock) -> None:

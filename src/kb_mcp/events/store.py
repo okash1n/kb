@@ -1421,6 +1421,40 @@ class EventStore:
             ).fetchone()
             return int(row["count"])
 
+    def materialization_counts(self) -> dict[str, int]:
+        with schema_locked_connection() as conn:
+            total_row = conn.execute(
+                "SELECT COUNT(*) AS count FROM materialization_records"
+            ).fetchone()
+            status_rows = conn.execute(
+                """
+                SELECT status, COUNT(*) AS count
+                FROM materialization_records
+                GROUP BY status
+                """
+            ).fetchall()
+            expired_row = conn.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM materialization_records
+                WHERE status='applying'
+                  AND lease_expires_at IS NOT NULL
+                  AND lease_expires_at <= ?
+                """,
+                (utc_now_iso(),),
+            ).fetchone()
+        by_status = {str(row["status"]): int(row["count"]) for row in status_rows}
+        return {
+            "total": int(total_row["count"]),
+            "planned": by_status.get("planned", 0),
+            "applying": by_status.get("applying", 0),
+            "applied": by_status.get("applied", 0),
+            "repair_pending": by_status.get("repair_pending", 0),
+            "failed": by_status.get("failed", 0),
+            "superseded": by_status.get("superseded", 0),
+            "expired_applying": int(expired_row["count"]),
+        }
+
     def suggestable_review_candidates(self) -> list[sqlite3.Row]:
         with schema_locked_connection() as conn:
             return conn.execute(
