@@ -160,6 +160,16 @@ class EventStore:
             ).fetchone()
             return int(row["count"])
 
+    def checkpoint_partition_keys(self, *, limit: int | None = None) -> list[str]:
+        with schema_locked_connection() as conn:
+            sql = "SELECT partition_key FROM checkpoint_sequences ORDER BY partition_key"
+            params: tuple[Any, ...] = ()
+            if limit is not None:
+                sql += " LIMIT ?"
+                params = (limit,)
+            rows = conn.execute(sql, params).fetchall()
+            return [str(row["partition_key"]) for row in rows]
+
     def replay_dead_letters(self, *, limit: int = 50) -> int:
         with self.transaction() as conn:
             rows = conn.execute(
@@ -242,6 +252,18 @@ class EventStore:
                     now,
                 ),
             )
+
+    def get_judge_run(self, *, window_id: str, prompt_version: str) -> sqlite3.Row | None:
+        with schema_locked_connection() as conn:
+            return conn.execute(
+                """
+                SELECT *
+                FROM judge_runs
+                WHERE window_id=? AND prompt_version=?
+                LIMIT 1
+                """,
+                (window_id, prompt_version),
+            ).fetchone()
 
     def claim_judge_run(
         self,
@@ -478,7 +500,7 @@ class EventStore:
             return review_seq
 
     def pending_review_candidates(self, *, limit: int = 50) -> list[sqlite3.Row]:
-        with self.transaction() as conn:
+        with schema_locked_connection() as conn:
             return conn.execute(
                 """
                 SELECT *
@@ -488,6 +510,25 @@ class EventStore:
                 LIMIT ?
                 """,
                 (limit,),
+            ).fetchall()
+
+    def pending_review_candidate_count(self) -> int:
+        with schema_locked_connection() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS count FROM promotion_candidates WHERE status='pending_review'"
+            ).fetchone()
+            return int(row["count"])
+
+    def suggestable_review_candidates(self) -> list[sqlite3.Row]:
+        with schema_locked_connection() as conn:
+            return conn.execute(
+                """
+                SELECT *
+                FROM promotion_candidates
+                WHERE status='pending_review'
+                  AND (last_suggested_at IS NULL OR updated_at > last_suggested_at)
+                ORDER BY created_at, candidate_key
+                """
             ).fetchall()
 
     @contextmanager

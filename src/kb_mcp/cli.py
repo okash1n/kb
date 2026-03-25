@@ -579,6 +579,21 @@ def cmd_doctor(args: argparse.Namespace) -> None:
     print(run_doctor(no_version_check=args.no_version_check))
 
 
+def cmd_judge_review_candidates(args: argparse.Namespace) -> None:
+    """Judge checkpoint windows and print pending review candidates."""
+    from kb_mcp.events.judge_runner import review_candidates
+
+    print(
+        json.dumps(
+            review_candidates(
+                display_limit=args.limit,
+                model_hint=args.model_hint,
+            ),
+            ensure_ascii=False,
+        )
+    )
+
+
 def _version_text() -> str:
     """Return a human-readable kb-mcp version string."""
     from kb_mcp.update import current_version
@@ -763,6 +778,13 @@ def build_parser() -> argparse.ArgumentParser:
     doctor_parser = sub.add_parser("doctor", help="Diagnose installation state")
     doctor_parser.add_argument("--no-version-check", action="store_true", help="Skip PyPI version check")
 
+    # judge
+    judge_parser = sub.add_parser("judge", help="Judge and review candidate commands")
+    judge_sub = judge_parser.add_subparsers(dest="judge_command")
+    judge_review_parser = judge_sub.add_parser("review-candidates", help="Build judge runs and print pending review candidates")
+    judge_review_parser.add_argument("--limit", type=int, default=50)
+    judge_review_parser.add_argument("--model-hint")
+
     return parser
 
 
@@ -801,6 +823,11 @@ def main() -> None:
             parser.parse_args(["session", "--help"])
     elif args.command == "doctor":
         cmd_doctor(args)
+    elif args.command == "judge":
+        if args.judge_command == "review-candidates":
+            cmd_judge_review_candidates(args)
+        else:
+            parser.parse_args(["judge", "--help"])
     elif args.command == "version":
         cmd_version(args)
     else:
