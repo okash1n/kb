@@ -140,6 +140,12 @@ def _runtime_checks() -> list[str]:
     pending_reviews = 0
     review_count = 0
     dead_letters = 0
+    materialization_counts: dict[str, int] | None = {
+        "total": 0,
+        "repair_pending": 0,
+        "failed": 0,
+        "expired_applying": 0,
+    }
     judge_metrics_error = None
     runtime_metrics_error = None
     if runtime_events_db_path().exists():
@@ -149,14 +155,31 @@ def _runtime_checks() -> list[str]:
             judge_counts = store.judge_run_counts()
             pending_reviews = store.pending_review_candidate_count()
             review_count = store.candidate_review_count()
+            materialization_counts = store.materialization_counts()
         except sqlite3.Error as exc:
             runtime_metrics_error = exc.__class__.__name__
             judge_metrics_error = exc.__class__.__name__
+            materialization_counts = None
+    if materialization_counts is None:
+        materialization_lines = [
+            _fmt("Materialization records", runtime_metrics_error or "error", False),
+            _fmt("Materializations repair pending", runtime_metrics_error or "error", False),
+            _fmt("Materializations failed", runtime_metrics_error or "error", False),
+            _fmt("Materializations applying expired", runtime_metrics_error or "error", False),
+        ]
+    else:
+        materialization_lines = [
+            _fmt_info("Materialization records", str(materialization_counts["total"])),
+            _fmt("Materializations repair pending", str(materialization_counts["repair_pending"]), materialization_counts["repair_pending"] == 0),
+            _fmt("Materializations failed", str(materialization_counts["failed"]), materialization_counts["failed"] == 0),
+            _fmt("Materializations applying expired", str(materialization_counts["expired_applying"]), materialization_counts["expired_applying"] == 0),
+        ]
     return [
         _fmt("Checkpoints", str(checkpoints), True),
         _fmt("Candidates", str(candidates), True),
         _fmt("Promotion plans", str(promotions), True),
         _fmt("Promotion records", str(records), True),
+        *materialization_lines,
         _fmt_info("Judge runs pending", str(judge_counts["ready"])),
         _fmt_info("Review candidates pending", str(pending_reviews)),
         _fmt_info("Candidate reviews", str(review_count)),
