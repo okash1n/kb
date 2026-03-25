@@ -1565,6 +1565,16 @@ class EventStore:
                 (asset_key,),
             ).fetchone()
 
+    def list_learning_assets(self) -> list[sqlite3.Row]:
+        with schema_locked_connection() as conn:
+            return conn.execute(
+                """
+                SELECT *
+                FROM learning_assets
+                ORDER BY updated_at DESC, asset_key ASC
+                """
+            ).fetchall()
+
     def learning_asset_counts(self) -> dict[str, int]:
         with schema_locked_connection() as conn:
             total_row = conn.execute("SELECT COUNT(*) AS count FROM learning_assets").fetchone()
