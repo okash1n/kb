@@ -6,7 +6,7 @@ AI hook payload を `kb-mcp hook dispatch` へ流し込むための互換 shim /
 
 AIツール（Claude Code, Copilot CLI, Codex CLI など）の Stop 相当タイミングで、
 turn checkpoint や session / tool / error 系イベントを durable event として取り込み、
-worker が session log / incident / checkpoint へ反映する。
+worker が checkpoint / candidate / promotion / session log へ反映する。
 
 ## アーキテクチャ
 
@@ -16,7 +16,7 @@ worker が session log / incident / checkpoint へ反映する。
   → kb-mcp hook dispatch
   → SQLite event store / outbox
   → kb-mcp worker run-once
-  → session_finalizer / incident_writer / checkpoint_writer
+  → checkpoint_writer / candidate_writer / promotion_planner / promotion_applier / session_finalizer
 ```
 
 - **on-session-end.sh**: 旧 entry point を残す互換 shim。内部で `dispatch` を呼ぶ
@@ -50,6 +50,12 @@ kb-mcp install hooks --claude --execute
 ```
 
 `install/hooks.sh` は後方互換 wrapper として残しており、内部では `kb-mcp install hooks` を呼ぶ。
+
+## 現在の保存方針
+
+- Claude / Copilot / Codex の Stop 相当 hook は全部 checkpoint として扱う
+- hook 同期パスで直接 `session-log` を作らへん
+- `gap` / `knowledge` / `adr` 保存や `final_hint` 付き checkpoint をきっかけに、後段 worker が `session-log` を昇格する
 
 ### ツール別
 
