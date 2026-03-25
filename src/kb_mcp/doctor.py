@@ -55,6 +55,15 @@ def _fmt_info(label: str, value: str) -> str:
     return f"{label}: {value}"
 
 
+def _legacy_path_check_line(path: Path) -> str:
+    if path.exists():
+        return (
+            f"  Legacy path present check: {path} present ✗ "
+            "(legacy repo path detected; cleanup if unused)"
+        )
+    return f"  Legacy path present check: {path} not present ✓"
+
+
 def _tool_checks() -> list[str]:
     lines = ["Tooling:"]
     claude_settings = claude_config_dir() / "settings.json"
@@ -104,7 +113,7 @@ def _tool_checks() -> list[str]:
         Path("install/hooks.sh"),
     ]
     for path in legacy_paths:
-        lines.append(f"  Legacy path present: {path} {'✓' if path.exists() else '✗'}")
+        lines.append(_legacy_path_check_line(path))
     return lines
 
 

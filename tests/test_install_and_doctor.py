@@ -14,7 +14,7 @@ import yaml
 from kb_mcp.config import load_config, runtime_events_db_path
 from kb_mcp.events.scheduler import scheduler_marker_path
 from kb_mcp.events.store import EventStore
-from kb_mcp.doctor import run_doctor
+from kb_mcp.doctor import _legacy_path_check_line, run_doctor
 from kb_mcp.install_hooks import install_claude, install_codex, install_copilot
 
 
@@ -166,6 +166,30 @@ class InstallAndDoctorTest(unittest.TestCase):
             )
         report = run_doctor(no_version_check=True)
         self.assertIn("Dead letters: 1 ✗", report)
+
+    def test_legacy_path_check_line_reports_absent_as_ok(self) -> None:
+        fake_path = mock.Mock()
+        fake_path.exists.return_value = False
+        fake_path.__str__ = mock.Mock(return_value="hooks/on-session-end.sh")
+
+        line = _legacy_path_check_line(fake_path)
+
+        self.assertEqual(
+            line,
+            "  Legacy path present check: hooks/on-session-end.sh not present ✓",
+        )
+
+    def test_legacy_path_check_line_reports_present_as_cleanup_candidate(self) -> None:
+        fake_path = mock.Mock()
+        fake_path.exists.return_value = True
+        fake_path.__str__ = mock.Mock(return_value="install/hooks.sh")
+
+        line = _legacy_path_check_line(fake_path)
+
+        self.assertEqual(
+            line,
+            "  Legacy path present check: install/hooks.sh present ✗ (legacy repo path detected; cleanup if unused)",
+        )
 
     def test_doctor_reports_judge_and_review_counts(self) -> None:
         store = EventStore()
