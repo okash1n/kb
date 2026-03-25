@@ -677,6 +677,76 @@ def cmd_judge_relabel(args: argparse.Namespace) -> None:
     _cmd_judge_review(args, verdict="relabeled")
 
 
+def cmd_judge_materialize(args: argparse.Namespace) -> None:
+    """Resolve reviewed candidates into materialization aggregates."""
+    from kb_mcp.events.store import EventStore
+
+    store = EventStore()
+    candidates = store.materializable_candidates(
+        candidate_key=args.candidate_key,
+        limit=(None if args.candidate_key else args.limit),
+    )
+    if args.candidate_key and not candidates:
+        print(f"ERROR: candidate is not materializable: {args.candidate_key}", file=sys.stderr)
+        raise SystemExit(1)
+
+    materialized: list[dict[str, object]] = []
+    for candidate in candidates:
+        try:
+            resolved = store.resolve_candidate_materialization(str(candidate["candidate_key"]))
+        except ValueError as exc:
+            if args.candidate_key:
+                print(f"ERROR: {exc}", file=sys.stderr)
+                raise SystemExit(1) from exc
+            materialized.append(
+                {
+                    "candidate_key": str(candidate["candidate_key"]),
+                    "result": "skipped",
+                    "error": str(exc),
+                }
+            )
+            continue
+        row = {
+            "candidate_key": str(resolved["candidate_key"]),
+            "review_seq": int(resolved["review_seq"]),
+            "effective_label": str(resolved["effective_label"]),
+            "materialization_key": str(resolved["materialization_key"]),
+            "result": str(resolved["result"]),
+        }
+        dispatch = resolved.get("dispatch")
+        if dispatch is not None:
+            row.update(
+                {
+                    "status": dispatch.status,
+                    "aggregate_version": dispatch.aggregate_version,
+                    "queued_sinks": dispatch.queued_sinks,
+                }
+            )
+        materialized.append(row)
+    print(
+        json.dumps(
+            {
+                "selected": len(candidates),
+                "materialized": len(materialized),
+                "results": materialized,
+            },
+            ensure_ascii=False,
+        )
+    )
+
+
+def cmd_judge_retry_failed_materializations(args: argparse.Namespace) -> None:
+    """Requeue repairable materialization records."""
+    from kb_mcp.events.worker import retry_failed_materializations
+
+    print(
+        json.dumps(
+            retry_failed_materializations(limit=args.limit),
+            ensure_ascii=False,
+        )
+    )
+
+
 def _version_text() -> str:
     """Return a human-readable kb-mcp version string."""
     from kb_mcp.update import current_version
@@ -880,6 +950,11 @@ def build_parser() -> argparse.ArgumentParser:
     judge_relabel_parser.add_argument("--label", required=True, choices=["adr", "gap", "knowledge", "session_thin"])
     judge_relabel_parser.add_argument("--comment")
     judge_relabel_parser.add_argument("--reviewed-by")
+    judge_materialize_parser = judge_sub.add_parser("materialize", help="Enqueue materialization for reviewed candidates")
+    judge_materialize_parser.add_argument("--candidate-key")
+    judge_materialize_parser.add_argument("--limit", type=int, default=50)
+    judge_retry_parser = judge_sub.add_parser("retry-failed-materializations", help="Requeue repairable materializations")
+    judge_retry_parser.add_argument("--limit", type=int, default=50)
 
     return parser
 
@@ -928,6 +1003,10 @@ def main() -> None:
             cmd_judge_reject(args)
         elif args.judge_command == "relabel":
             cmd_judge_relabel(args)
+        elif args.judge_command == "materialize":
+            cmd_judge_materialize(args)
+        elif args.judge_command == "retry-failed-materializations":
+            cmd_judge_retry_failed_materializations(args)
         else:
             parser.parse_args(["judge", "--help"])
     elif args.command == "version":

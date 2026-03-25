@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 from kb_mcp.events.policies.candidate_writer import write_candidates
 from kb_mcp.events.policies.checkpoint_writer import write_checkpoint
 from kb_mcp.events.policies.incident_writer import write_incident
@@ -9,6 +11,7 @@ from kb_mcp.events.policies.promotion_applier import apply_promotion
 from kb_mcp.events.policies.promotion_planner import write_promotion_plan
 from kb_mcp.events.policies.session_finalizer import finalize_session
 from kb_mcp.events.store import EventStore
+from kb_mcp.note import generate_ulid
 
 SINK_HANDLERS = {
     "session_finalizer": finalize_session,
@@ -50,3 +53,58 @@ def run_once(*, maintenance: bool = False, limit: int = 50) -> dict[str, int]:
             store.mark_sink_failed(item["id"], str(exc))
             result["failed"] += 1
     return result
+
+
+def retry_failed_materializations(*, limit: int = 50) -> dict[str, object]:
+    """Requeue retryable materialization records."""
+    store = EventStore()
+    retried: list[dict[str, object]] = []
+    skipped_records: list[dict[str, object]] = []
+    skipped = 0
+    lease_expires_at = (
+        datetime.now(timezone.utc) + timedelta(minutes=5)
+    ).isoformat(timespec="seconds")
+    retry_run_id = generate_ulid()
+    for record in store.retryable_materialization_records(limit=limit):
+        try:
+            result = store.retry_materialization(
+                materialization_key=str(record["materialization_key"]),
+                lease_owner=f"retry:{retry_run_id}:{record['materialization_key']}",
+                lease_expires_at=lease_expires_at,
+            )
+        except Exception as exc:
+            skipped += 1
+            skipped_records.append(
+                {
+                    "materialization_key": str(record["materialization_key"]),
+                    "candidate_key": str(record["candidate_key"]),
+                    "error": str(exc),
+                }
+            )
+            continue
+        if result is None:
+            skipped += 1
+            skipped_records.append(
+                {
+                    "materialization_key": str(record["materialization_key"]),
+                    "candidate_key": str(record["candidate_key"]),
+                    "error": "record is no longer retryable",
+                }
+            )
+            continue
+        retried.append(
+            {
+                "materialization_key": str(record["materialization_key"]),
+                "candidate_key": str(record["candidate_key"]),
+                "effective_label": str(record["effective_label"]),
+                "status": result["status"],
+                "aggregate_version": result["aggregate_version"],
+                "queued_sinks": result["queued_sinks"],
+            }
+        )
+    return {
+        "retried": len(retried),
+        "skipped": skipped,
+        "records": retried,
+        "skipped_records": skipped_records,
+    }
