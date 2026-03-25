@@ -48,7 +48,7 @@ def write_wrapper_script(
     script = hooks_dir / f"{name}.sh"
     dispatch_command = (
         f'printf "%s" "${{PAYLOAD}}" | "{kb_mcp_path}" hook dispatch '
-        f"--tool {tool} --client {client} --layer client_hook --event session_ended --run-worker"
+        f"--tool {tool} --client {client} --layer client_hook --event turn_checkpointed --run-worker"
     )
     if suppress_stdout:
         dispatch_command += " >/dev/null"

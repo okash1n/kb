@@ -73,8 +73,7 @@ class EventPipelineTest(unittest.TestCase):
             "summary": "Turn finished",
             "content": "Short turn excerpt",
         }
-        store.append(normalize_event(tool="codex", client="codex-cli", layer="client_hook", event="session_started", payload=payload))
-        store.append(normalize_event(tool="codex", client="codex-cli", layer="client_hook", event="session_ended", payload=payload))
+        store.append(normalize_event(tool="codex", client="codex-cli", layer="client_hook", event="turn_checkpointed", payload=payload))
         result = run_once(maintenance=True)
         self.assertGreaterEqual(result["applied"], 1)
         files = sorted((self.vault / "projects" / self.project / "session-log").glob("*.md"))
@@ -123,7 +122,7 @@ class EventPipelineTest(unittest.TestCase):
             tool="codex",
             client="codex-cli",
             layer="client_hook",
-            event="session_ended",
+            event="turn_checkpointed",
             payload={
                 "session_id": "session-3",
                 "summary": "short summary",
@@ -186,7 +185,7 @@ class EventPipelineTest(unittest.TestCase):
             tool="codex",
             client="codex-cli",
             layer="client_hook",
-            event="session_ended",
+            event="turn_checkpointed",
             payload={
                 "session_id": "session-4",
                 "summary": "session ended",

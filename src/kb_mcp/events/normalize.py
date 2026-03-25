@@ -14,6 +14,7 @@ from kb_mcp.events.identity import (
 from kb_mcp.events.redaction import redact_payload
 from kb_mcp.events.transcript_reader import read_transcript_excerpt
 from kb_mcp.events.types import (
+    CHECKPOINT_EVENTS,
     COMPACT_EVENTS,
     ERROR_EVENTS,
     EventEnvelope,
@@ -100,6 +101,9 @@ def normalize_event(
         aggregate_type = "compact"
         ordinal = int(payload.get("ordinal") or payload.get("sequence") or 1)
         logical_key = compact_logical_key(correlation_id, ordinal)
+    elif event in CHECKPOINT_EVENTS:
+        aggregate_type = "compact"
+        logical_key = compact_logical_key(correlation_id, 1)
     else:  # pragma: no cover
         raise AssertionError(f"Unhandled event: {event}")
 

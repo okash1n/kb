@@ -426,7 +426,7 @@ def cmd_hook_session_end(args: argparse.Namespace) -> None:
         tool=args.tool,
         client=args.client,
         layer="client_hook",
-        event="session_ended",
+        event="turn_checkpointed",
         payload_file=None,
         run_worker=True,
     )

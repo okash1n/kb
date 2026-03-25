@@ -4,8 +4,8 @@ AI hook payload を `kb-mcp hook dispatch` へ流し込むための互換 shim /
 
 ## 目的
 
-AIツール（Claude Code, Copilot CLI, Codex CLI など）のセッション終了時に、
-session 終了や tool/error/compact 系イベントを durable event として取り込み、
+AIツール（Claude Code, Copilot CLI, Codex CLI など）の Stop 相当タイミングで、
+turn checkpoint や session / tool / error 系イベントを durable event として取り込み、
 worker が session log / incident / checkpoint へ反映する。
 
 ## アーキテクチャ
@@ -87,7 +87,7 @@ KB_CWD=/path/to/my-repo ./hooks/on-session-end.sh "Fixed auth bug" claude "sessi
 
 # 直接 event pipeline に流す場合
 printf '{"session_id":"abc","summary":"Fixed auth bug","content":"session body"}' \
-  | kb-mcp hook dispatch --tool claude --client claude-code --layer client_hook --event session_ended --run-worker
+  | kb-mcp hook dispatch --tool claude --client claude-code --layer client_hook --event turn_checkpointed --run-worker
 ```
 
 ### 引数の順序

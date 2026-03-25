@@ -99,5 +99,5 @@ printf '%s' "${payload}" | "${kb_cmd}" hook dispatch \
   --tool "${ai_tool}" \
   --client "${client}" \
   --layer client_hook \
-  --event session_ended \
+  --event turn_checkpointed \
   --run-worker
