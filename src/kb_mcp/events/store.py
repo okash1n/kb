@@ -11,6 +11,11 @@ from kb_mcp.events.candidates import detect_candidates
 from kb_mcp.events.schema import schema_locked_connection
 from kb_mcp.events.types import DispatchResult, EventEnvelope, utc_now_iso
 
+_CANDIDATE_LABELS = {"adr", "gap", "knowledge", "session_thin"}
+_CANDIDATE_STATUSES = {"pending_review", "accepted", "rejected", "materialized"}
+_JUDGE_STATUSES = {"ready", "judged", "superseded", "failed"}
+_HUMAN_VERDICTS = {"accepted", "rejected", "relabeled"}
+
 
 class EventStore:
     """Durable event store for hook and middleware events."""
@@ -179,6 +184,311 @@ class EventStore:
                 [(now, row["id"]) for row in rows],
             )
             return len(rows)
+
+    def upsert_judge_run(
+        self,
+        *,
+        judge_run_key: str,
+        partition_key: str,
+        window_id: str,
+        start_ordinal: int,
+        end_ordinal: int,
+        window_index: int,
+        status: str,
+        prompt_version: str,
+        labels: list[dict[str, Any]] | None = None,
+        decision: dict[str, Any] | None = None,
+        model_hint: str | None = None,
+        supersedes_judge_run_key: str | None = None,
+    ) -> None:
+        if status not in _JUDGE_STATUSES:
+            raise ValueError(f"invalid judge status: {status}")
+        now = utc_now_iso()
+        with self.transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO judge_runs(
+                  judge_run_key, partition_key, window_id, start_ordinal, end_ordinal,
+                  window_index, status, labels_json, decision_json, prompt_version,
+                  model_hint, supersedes_judge_run_key, lease_owner, lease_expires_at,
+                  created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?)
+                ON CONFLICT(window_id, prompt_version) DO UPDATE SET
+                  partition_key=excluded.partition_key,
+                  start_ordinal=excluded.start_ordinal,
+                  end_ordinal=excluded.end_ordinal,
+                  window_index=excluded.window_index,
+                  status=excluded.status,
+                  labels_json=excluded.labels_json,
+                  decision_json=excluded.decision_json,
+                  model_hint=excluded.model_hint,
+                  supersedes_judge_run_key=excluded.supersedes_judge_run_key,
+                  updated_at=excluded.updated_at
+                """,
+                (
+                    judge_run_key,
+                    partition_key,
+                    window_id,
+                    start_ordinal,
+                    end_ordinal,
+                    window_index,
+                    status,
+                    json.dumps(labels or [], ensure_ascii=False),
+                    json.dumps(decision or {}, ensure_ascii=False),
+                    prompt_version,
+                    model_hint,
+                    supersedes_judge_run_key,
+                    now,
+                    now,
+                ),
+            )
+
+    def claim_judge_run(
+        self,
+        *,
+        window_id: str,
+        prompt_version: str,
+        lease_owner: str,
+        lease_expires_at: str,
+    ) -> sqlite3.Row | None:
+        with self.transaction() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM judge_runs
+                WHERE window_id=? AND prompt_version=?
+                  AND status='ready'
+                  AND (lease_expires_at IS NULL OR lease_expires_at <= ?)
+                LIMIT 1
+                """,
+                (window_id, prompt_version, utc_now_iso()),
+            ).fetchone()
+            if row is None:
+                return None
+            conn.execute(
+                """
+                UPDATE judge_runs
+                SET lease_owner=?, lease_expires_at=?, updated_at=?
+                WHERE judge_run_key=?
+                """,
+                (lease_owner, lease_expires_at, utc_now_iso(), row["judge_run_key"]),
+            )
+            return conn.execute(
+                "SELECT * FROM judge_runs WHERE judge_run_key=?",
+                (row["judge_run_key"],),
+            ).fetchone()
+
+    def heartbeat_judge_run(
+        self,
+        *,
+        judge_run_key: str,
+        lease_owner: str,
+        lease_expires_at: str,
+    ) -> bool:
+        with self.transaction() as conn:
+            result = conn.execute(
+                """
+                UPDATE judge_runs
+                SET lease_expires_at=?, updated_at=?
+                WHERE judge_run_key=? AND lease_owner=?
+                """,
+                (lease_expires_at, utc_now_iso(), judge_run_key, lease_owner),
+            )
+            return result.rowcount > 0
+
+    def release_judge_run(self, *, judge_run_key: str, lease_owner: str) -> bool:
+        with self.transaction() as conn:
+            result = conn.execute(
+                """
+                UPDATE judge_runs
+                SET lease_owner=NULL, lease_expires_at=NULL, updated_at=?
+                WHERE judge_run_key=? AND lease_owner=?
+                """,
+                (utc_now_iso(), judge_run_key, lease_owner),
+            )
+            return result.rowcount > 0
+
+    def upsert_promotion_candidate(
+        self,
+        *,
+        candidate_key: str,
+        window_id: str,
+        judge_run_key: str,
+        label: str,
+        status: str,
+        score: float | None,
+        slice_fingerprint: str | None,
+        reasons: list[str],
+        payload: dict[str, Any],
+    ) -> None:
+        if label not in _CANDIDATE_LABELS:
+            raise ValueError(f"invalid candidate label: {label}")
+        if status not in _CANDIDATE_STATUSES:
+            raise ValueError(f"invalid candidate status: {status}")
+        now = utc_now_iso()
+        with self.transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO promotion_candidates(
+                  candidate_key, window_id, judge_run_key, label, status, score,
+                  slice_fingerprint, reasons_json, payload_json, last_suggested_at,
+                  suggestion_seq, resolved_at, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, NULL, ?, ?)
+                ON CONFLICT(candidate_key) DO UPDATE SET
+                  judge_run_key=CASE
+                    WHEN promotion_candidates.status='pending_review' THEN excluded.judge_run_key
+                    ELSE promotion_candidates.judge_run_key
+                  END,
+                  status=CASE
+                    WHEN promotion_candidates.status='pending_review' THEN excluded.status
+                    ELSE promotion_candidates.status
+                  END,
+                  score=CASE
+                    WHEN promotion_candidates.status='pending_review' THEN excluded.score
+                    ELSE promotion_candidates.score
+                  END,
+                  slice_fingerprint=CASE
+                    WHEN promotion_candidates.status='pending_review' THEN excluded.slice_fingerprint
+                    ELSE promotion_candidates.slice_fingerprint
+                  END,
+                  reasons_json=CASE
+                    WHEN promotion_candidates.status='pending_review' THEN excluded.reasons_json
+                    ELSE promotion_candidates.reasons_json
+                  END,
+                  payload_json=CASE
+                    WHEN promotion_candidates.status='pending_review' THEN excluded.payload_json
+                    ELSE promotion_candidates.payload_json
+                  END,
+                  updated_at=excluded.updated_at
+                """,
+                (
+                    candidate_key,
+                    window_id,
+                    judge_run_key,
+                    label,
+                    status,
+                    score,
+                    slice_fingerprint,
+                    json.dumps(reasons, ensure_ascii=False),
+                    json.dumps(payload, ensure_ascii=False),
+                    now,
+                    now,
+                ),
+            )
+
+    def mark_candidates_suggested(self, candidate_keys: list[str]) -> int:
+        if not candidate_keys:
+            return 0
+        now = utc_now_iso()
+        with self.transaction() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT candidate_key, suggestion_seq
+                FROM promotion_candidates
+                WHERE candidate_key IN ({",".join("?" for _ in candidate_keys)})
+                """,
+                candidate_keys,
+            ).fetchall()
+            conn.executemany(
+                """
+                UPDATE promotion_candidates
+                SET last_suggested_at=?, suggestion_seq=?, updated_at=?
+                WHERE candidate_key=?
+                """,
+                [
+                    (now, int(row["suggestion_seq"]) + 1, now, row["candidate_key"])
+                    for row in rows
+                ],
+            )
+            return len(rows)
+
+    def record_candidate_review(
+        self,
+        *,
+        review_id: str,
+        candidate_key: str,
+        window_id: str,
+        judge_run_key: str,
+        ai_labels: list[dict[str, Any]],
+        ai_score: dict[str, Any],
+        human_verdict: str,
+        human_label: str | None,
+        review_comment: str | None = None,
+        reviewed_by: str | None = None,
+    ) -> int:
+        if human_verdict not in _HUMAN_VERDICTS:
+            raise ValueError(f"invalid human verdict: {human_verdict}")
+        if human_verdict == "relabeled" and not human_label:
+            raise ValueError("human_label is required for relabeled verdict")
+        if human_label is not None and human_label not in _CANDIDATE_LABELS:
+            raise ValueError(f"invalid human label: {human_label}")
+        reviewed_at = utc_now_iso()
+        with self.transaction() as conn:
+            candidate = conn.execute(
+                """
+                SELECT candidate_key, window_id, judge_run_key
+                FROM promotion_candidates
+                WHERE candidate_key=?
+                """,
+                (candidate_key,),
+            ).fetchone()
+            if candidate is None:
+                raise ValueError(f"candidate not found: {candidate_key}")
+            if candidate["window_id"] != window_id:
+                raise ValueError("window_id does not match candidate")
+            if candidate["judge_run_key"] != judge_run_key:
+                raise ValueError("judge_run_key does not match candidate")
+            row = conn.execute(
+                "SELECT COALESCE(MAX(review_seq), 0) AS max_seq FROM candidate_reviews WHERE candidate_key=?",
+                (candidate_key,),
+            ).fetchone()
+            review_seq = int(row["max_seq"]) + 1
+            conn.execute(
+                """
+                INSERT INTO candidate_reviews(
+                  review_id, candidate_key, review_seq, window_id, judge_run_key,
+                  ai_labels_json, ai_score_json, human_verdict, human_label,
+                  review_comment, reviewed_by, reviewed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    review_id,
+                    candidate_key,
+                    review_seq,
+                    window_id,
+                    judge_run_key,
+                    json.dumps(ai_labels, ensure_ascii=False),
+                    json.dumps(ai_score, ensure_ascii=False),
+                    human_verdict,
+                    human_label,
+                    review_comment,
+                    reviewed_by,
+                    reviewed_at,
+                ),
+            )
+            candidate_status = "accepted" if human_verdict == "accepted" else "rejected"
+            conn.execute(
+                """
+                UPDATE promotion_candidates
+                SET status=?, resolved_at=?, updated_at=?
+                WHERE candidate_key=?
+                """,
+                (candidate_status, reviewed_at, reviewed_at, candidate_key),
+            )
+            return review_seq
+
+    def pending_review_candidates(self, *, limit: int = 50) -> list[sqlite3.Row]:
+        with self.transaction() as conn:
+            return conn.execute(
+                """
+                SELECT *
+                FROM promotion_candidates
+                WHERE status='pending_review'
+                ORDER BY created_at, candidate_key
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
 
     @contextmanager
     def transaction(self) -> sqlite3.Connection:

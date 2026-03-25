@@ -394,6 +394,294 @@ class EventPipelineTest(unittest.TestCase):
         self.assertEqual(removed["checkpoints"], 1)
         self.assertFalse(old_file.exists())
 
+    def test_schema_version_3_creates_review_ledger_tables(self) -> None:
+        with EventStore().transaction() as conn:
+            version = conn.execute(
+                "SELECT value FROM schema_meta WHERE key='schema_version'"
+            ).fetchone()
+            tables = {
+                row["name"]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+        self.assertEqual(version["value"], "3")
+        self.assertTrue({"judge_runs", "promotion_candidates", "candidate_reviews"} <= tables)
+
+    def test_upsert_and_claim_judge_run(self) -> None:
+        store = EventStore()
+        store.upsert_judge_run(
+            judge_run_key="judge-1",
+            partition_key="partition-1",
+            window_id="window-1",
+            start_ordinal=1,
+            end_ordinal=10,
+            window_index=1,
+            status="ready",
+            prompt_version="v1",
+            labels=[{"label": "gap", "score": 0.9, "reasons": ["user_correction"]}],
+            decision={"carry_forward": False},
+            model_hint="codex",
+        )
+        claimed = store.claim_judge_run(
+            window_id="window-1",
+            prompt_version="v1",
+            lease_owner="runner-1",
+            lease_expires_at="2026-03-25T00:10:00+00:00",
+        )
+        self.assertIsNotNone(claimed)
+        self.assertEqual(claimed["lease_owner"], "runner-1")
+        self.assertTrue(
+            store.heartbeat_judge_run(
+                judge_run_key="judge-1",
+                lease_owner="runner-1",
+                lease_expires_at="2026-03-25T00:11:00+00:00",
+            )
+        )
+        self.assertTrue(store.release_judge_run(judge_run_key="judge-1", lease_owner="runner-1"))
+        with store.transaction() as conn:
+            row = conn.execute(
+                "SELECT lease_owner, lease_expires_at FROM judge_runs WHERE judge_run_key='judge-1'"
+            ).fetchone()
+        self.assertIsNone(row["lease_owner"])
+        self.assertIsNone(row["lease_expires_at"])
+
+    def test_judge_run_upsert_uses_window_and_prompt_unique_pair(self) -> None:
+        store = EventStore()
+        store.upsert_judge_run(
+            judge_run_key="judge-a",
+            partition_key="partition-1",
+            window_id="window-1",
+            start_ordinal=1,
+            end_ordinal=5,
+            window_index=1,
+            status="ready",
+            prompt_version="v1",
+        )
+        store.upsert_judge_run(
+            judge_run_key="judge-b",
+            partition_key="partition-1",
+            window_id="window-1",
+            start_ordinal=1,
+            end_ordinal=6,
+            window_index=1,
+            status="judged",
+            prompt_version="v1",
+            labels=[{"label": "gap", "score": 0.9}],
+        )
+        with store.transaction() as conn:
+            rows = conn.execute(
+                "SELECT judge_run_key, end_ordinal, status FROM judge_runs WHERE window_id='window-1' AND prompt_version='v1'"
+            ).fetchall()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["judge_run_key"], "judge-a")
+        self.assertEqual(rows[0]["end_ordinal"], 6)
+        self.assertEqual(rows[0]["status"], "judged")
+
+    def test_claim_judge_run_only_claims_ready_rows(self) -> None:
+        store = EventStore()
+        store.upsert_judge_run(
+            judge_run_key="judge-done",
+            partition_key="partition-2",
+            window_id="window-2",
+            start_ordinal=1,
+            end_ordinal=4,
+            window_index=1,
+            status="judged",
+            prompt_version="v1",
+        )
+        claimed = store.claim_judge_run(
+            window_id="window-2",
+            prompt_version="v1",
+            lease_owner="runner-2",
+            lease_expires_at="2026-03-25T00:10:00+00:00",
+        )
+        self.assertIsNone(claimed)
+
+    def test_candidate_upsert_preserves_resolved_rows(self) -> None:
+        store = EventStore()
+        store.upsert_judge_run(
+            judge_run_key="judge-1",
+            partition_key="partition-1",
+            window_id="window-1",
+            start_ordinal=1,
+            end_ordinal=3,
+            window_index=1,
+            status="ready",
+            prompt_version="v1",
+        )
+        store.upsert_judge_run(
+            judge_run_key="judge-2",
+            partition_key="partition-1",
+            window_id="window-1",
+            start_ordinal=1,
+            end_ordinal=3,
+            window_index=1,
+            status="ready",
+            prompt_version="v2",
+        )
+        store.upsert_promotion_candidate(
+            candidate_key="cand-1",
+            window_id="window-1",
+            judge_run_key="judge-1",
+            label="gap",
+            status="pending_review",
+            score=0.8,
+            slice_fingerprint="slice-1",
+            reasons=["user_correction"],
+            payload={"window_id": "window-1"},
+        )
+        review_seq = store.record_candidate_review(
+            review_id="review-1",
+            candidate_key="cand-1",
+            window_id="window-1",
+            judge_run_key="judge-1",
+            ai_labels=[{"label": "gap", "score": 0.8}],
+            ai_score={"gap": 0.8},
+            human_verdict="accepted",
+            human_label=None,
+        )
+        self.assertEqual(review_seq, 1)
+        store.upsert_promotion_candidate(
+            candidate_key="cand-1",
+            window_id="window-1",
+            judge_run_key="judge-2",
+            label="gap",
+            status="pending_review",
+            score=0.3,
+            slice_fingerprint="slice-1",
+            reasons=["low_confidence"],
+            payload={"window_id": "window-1", "changed": True},
+        )
+        with store.transaction() as conn:
+            row = conn.execute(
+                "SELECT judge_run_key, status, score, payload_json, resolved_at FROM promotion_candidates WHERE candidate_key='cand-1'"
+            ).fetchone()
+            review = conn.execute(
+                "SELECT review_seq, human_verdict FROM candidate_reviews WHERE candidate_key='cand-1'"
+            ).fetchone()
+        self.assertEqual(row["judge_run_key"], "judge-1")
+        self.assertEqual(row["status"], "accepted")
+        self.assertEqual(review["review_seq"], 1)
+        self.assertEqual(review["human_verdict"], "accepted")
+        self.assertIsNotNone(row["resolved_at"])
+
+    def test_pending_candidates_can_be_marked_suggested(self) -> None:
+        store = EventStore()
+        store.upsert_judge_run(
+            judge_run_key="judge-2",
+            partition_key="partition-2",
+            window_id="window-2",
+            start_ordinal=1,
+            end_ordinal=3,
+            window_index=1,
+            status="ready",
+            prompt_version="v1",
+        )
+        store.upsert_promotion_candidate(
+            candidate_key="cand-2",
+            window_id="window-2",
+            judge_run_key="judge-2",
+            label="knowledge",
+            status="pending_review",
+            score=0.81,
+            slice_fingerprint="slice-2",
+            reasons=["verified_fact"],
+            payload={"window_id": "window-2"},
+        )
+        rows = store.pending_review_candidates(limit=10)
+        self.assertEqual(len(rows), 1)
+        updated = store.mark_candidates_suggested(["cand-2"])
+        self.assertEqual(updated, 1)
+        with store.transaction() as conn:
+            row = conn.execute(
+                "SELECT suggestion_seq, last_suggested_at FROM promotion_candidates WHERE candidate_key='cand-2'"
+            ).fetchone()
+        self.assertEqual(row["suggestion_seq"], 1)
+        self.assertIsNotNone(row["last_suggested_at"])
+
+    def test_record_candidate_review_rejects_missing_candidate(self) -> None:
+        store = EventStore()
+        with self.assertRaisesRegex(ValueError, "candidate not found"):
+            store.record_candidate_review(
+                review_id="review-missing",
+                candidate_key="missing",
+                window_id="window-x",
+                judge_run_key="judge-x",
+                ai_labels=[{"label": "gap", "score": 0.8}],
+                ai_score={"gap": 0.8},
+                human_verdict="accepted",
+                human_label=None,
+            )
+
+    def test_record_candidate_review_validates_verdict_and_label(self) -> None:
+        store = EventStore()
+        store.upsert_judge_run(
+            judge_run_key="judge-3",
+            partition_key="partition-3",
+            window_id="window-3",
+            start_ordinal=1,
+            end_ordinal=3,
+            window_index=1,
+            status="ready",
+            prompt_version="v1",
+        )
+        store.upsert_promotion_candidate(
+            candidate_key="cand-3",
+            window_id="window-3",
+            judge_run_key="judge-3",
+            label="gap",
+            status="pending_review",
+            score=0.8,
+            slice_fingerprint="slice-3",
+            reasons=["user_correction"],
+            payload={"window_id": "window-3"},
+        )
+        with self.assertRaisesRegex(ValueError, "invalid human verdict"):
+            store.record_candidate_review(
+                review_id="review-bad-verdict",
+                candidate_key="cand-3",
+                window_id="window-3",
+                judge_run_key="judge-3",
+                ai_labels=[{"label": "gap", "score": 0.8}],
+                ai_score={"gap": 0.8},
+                human_verdict="maybe",
+                human_label=None,
+            )
+        with self.assertRaisesRegex(ValueError, "human_label is required"):
+            store.record_candidate_review(
+                review_id="review-missing-label",
+                candidate_key="cand-3",
+                window_id="window-3",
+                judge_run_key="judge-3",
+                ai_labels=[{"label": "gap", "score": 0.8}],
+                ai_score={"gap": 0.8},
+                human_verdict="relabeled",
+                human_label=None,
+            )
+        with self.assertRaisesRegex(ValueError, "window_id does not match candidate"):
+            store.record_candidate_review(
+                review_id="review-bad-window",
+                candidate_key="cand-3",
+                window_id="window-other",
+                judge_run_key="judge-3",
+                ai_labels=[{"label": "gap", "score": 0.8}],
+                ai_score={"gap": 0.8},
+                human_verdict="accepted",
+                human_label=None,
+            )
+        with self.assertRaisesRegex(ValueError, "judge_run_key does not match candidate"):
+            store.record_candidate_review(
+                review_id="review-bad-judge",
+                candidate_key="cand-3",
+                window_id="window-3",
+                judge_run_key="judge-other",
+                ai_labels=[{"label": "gap", "score": 0.8}],
+                ai_score={"gap": 0.8},
+                human_verdict="accepted",
+                human_label=None,
+            )
+
     def test_transcript_excerpt_wins_over_summary_when_content_missing(self) -> None:
         transcript = self.vault / "transcript.txt"
         transcript.write_text("line1\nline2\nimportant transcript line\n", encoding="utf-8")

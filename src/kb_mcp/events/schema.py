@@ -8,7 +8,7 @@ from pathlib import Path
 
 from kb_mcp.config import runtime_events_db_path, runtime_events_dir
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 DDL = [
     """
@@ -107,6 +107,62 @@ DDL = [
     CREATE TABLE IF NOT EXISTS checkpoint_sequences (
       partition_key TEXT PRIMARY KEY,
       next_ordinal INTEGER NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS judge_runs (
+      judge_run_key TEXT PRIMARY KEY,
+      partition_key TEXT NOT NULL,
+      window_id TEXT NOT NULL,
+      start_ordinal INTEGER NOT NULL,
+      end_ordinal INTEGER NOT NULL,
+      window_index INTEGER NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('ready', 'judged', 'superseded', 'failed')),
+      labels_json TEXT NOT NULL,
+      decision_json TEXT NOT NULL,
+      prompt_version TEXT NOT NULL,
+      model_hint TEXT,
+      supersedes_judge_run_key TEXT,
+      lease_owner TEXT,
+      lease_expires_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(window_id, prompt_version)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS promotion_candidates (
+      candidate_key TEXT PRIMARY KEY,
+      window_id TEXT NOT NULL,
+      judge_run_key TEXT NOT NULL REFERENCES judge_runs(judge_run_key),
+      label TEXT NOT NULL CHECK (label IN ('adr', 'gap', 'knowledge', 'session_thin')),
+      status TEXT NOT NULL CHECK (status IN ('pending_review', 'accepted', 'rejected', 'materialized')),
+      score REAL,
+      slice_fingerprint TEXT,
+      reasons_json TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      last_suggested_at TEXT,
+      suggestion_seq INTEGER NOT NULL DEFAULT 0,
+      resolved_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS candidate_reviews (
+      review_id TEXT PRIMARY KEY,
+      candidate_key TEXT NOT NULL REFERENCES promotion_candidates(candidate_key),
+      review_seq INTEGER NOT NULL,
+      window_id TEXT NOT NULL,
+      judge_run_key TEXT NOT NULL REFERENCES judge_runs(judge_run_key),
+      ai_labels_json TEXT NOT NULL,
+      ai_score_json TEXT NOT NULL,
+      human_verdict TEXT NOT NULL CHECK (human_verdict IN ('accepted', 'rejected', 'relabeled')),
+      human_label TEXT CHECK (human_label IS NULL OR human_label IN ('adr', 'gap', 'knowledge', 'session_thin')),
+      review_comment TEXT,
+      reviewed_by TEXT,
+      reviewed_at TEXT NOT NULL,
+      UNIQUE(candidate_key, review_seq)
     )
     """,
 ]
