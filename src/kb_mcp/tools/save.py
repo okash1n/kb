@@ -3,6 +3,7 @@
 from pathlib import Path
 
 from kb_mcp.config import inbox_dir, kb_data_root, projects_dir, safe_resolve
+from kb_mcp.events.request_context import REQUEST_CONTEXT
 from kb_mcp.vault_git import vault_git_sync
 from kb_mcp.note import (
     build_filename,
@@ -58,6 +59,10 @@ def _write_note(
     d = _ensure_project_dir(project, subdir)
     ulid = generate_ulid()
     filename = build_filename(slug=slugify(slug), ulid=ulid)
+    context = REQUEST_CONTEXT.get()
+    note_extra_fields = dict(extra_fields or {})
+    if context and context.get("save_request_id"):
+        note_extra_fields.setdefault("save_request_id", context["save_request_id"])
     fm = build_frontmatter(
         ulid=ulid,
         summary=summary,
@@ -67,10 +72,11 @@ def _write_note(
         tags=tags,
         related=related,
         status=status,
-        extra_fields=extra_fields,
+        extra_fields=note_extra_fields or None,
     )
     filepath = d / filename
     filepath.write_text(f"{fm}\n\n{content}\n", encoding="utf-8")
+    _update_request_context(context, ulid=ulid, filepath=filepath, note_type=subdir)
     rel = filepath.resolve().relative_to(kb_data_root().resolve())
     msg = f"Saved: {rel} (id: {ulid})"
     git_msg = vault_git_sync(filepath)
@@ -211,6 +217,10 @@ def kb_session(
     d = _ensure_project_dir(project_name, "session-log")
     ulid = generate_ulid()
     filename = build_session_filename(ulid=ulid)
+    context = REQUEST_CONTEXT.get()
+    note_extra_fields = dict(extra_fields or {})
+    if context and context.get("save_request_id"):
+        note_extra_fields.setdefault("save_request_id", context["save_request_id"])
     fm = build_frontmatter(
         ulid=ulid,
         summary=summary,
@@ -219,11 +229,12 @@ def kb_session(
         repo=repo_id,
         tags=tags,
         related=related,
-        extra_fields=extra_fields,
+        extra_fields=note_extra_fields or None,
     )
     filepath = d / filename
     filepath.write_text(f"{fm}\n\n{content}\n", encoding="utf-8")
     filepath.chmod(0o444)  # read-only — session logs are immutable
+    _update_request_context(context, ulid=ulid, filepath=filepath, note_type="session-log")
     rel = filepath.resolve().relative_to(kb_data_root().resolve())
     msg = f"Saved: {rel} (id: {ulid})"
     git_msg = vault_git_sync(filepath)
@@ -260,6 +271,10 @@ def kb_draft(
 
     ulid = generate_ulid()
     filename = build_filename(slug=slugify(slug), ulid=ulid)
+    context = REQUEST_CONTEXT.get()
+    note_extra_fields = dict(extra_fields or {})
+    if context and context.get("save_request_id"):
+        note_extra_fields.setdefault("save_request_id", context["save_request_id"])
     fm = build_frontmatter(
         ulid=ulid,
         summary=summary,
@@ -268,13 +283,22 @@ def kb_draft(
         repo=repo_id,
         tags=tags,
         related=related,
-        extra_fields=extra_fields,
+        extra_fields=note_extra_fields or None,
     )
     filepath = d / filename
     filepath.write_text(f"{fm}\n\n{content}\n", encoding="utf-8")
+    _update_request_context(context, ulid=ulid, filepath=filepath, note_type="draft")
     rel = filepath.resolve().relative_to(kb_data_root().resolve())
     msg = f"Saved: {rel} (id: {ulid})"
     git_msg = vault_git_sync(filepath)
     if git_msg:
         msg += f"\n{git_msg}"
     return msg
+
+
+def _update_request_context(context: dict | None, *, ulid: str, filepath: Path, note_type: str) -> None:
+    if context is None:
+        return
+    context["saved_note_id"] = ulid
+    context["saved_note_path"] = str(filepath)
+    context["saved_note_type"] = note_type
