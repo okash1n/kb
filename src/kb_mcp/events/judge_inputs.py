@@ -257,6 +257,8 @@ def build_window_payload(window: WindowInput) -> dict[str, Any]:
                 "repo": item.repo,
                 "session_id": item.session_id,
                 "transcript_path": item.transcript_path,
+                "checkpoint_kind": item.aggregate_state.get("checkpoint_kind", "turn"),
+                "final_hint": bool(item.aggregate_state.get("final_hint", False)),
                 "topic_shift_candidate": detect_topic_shift(item.summary, item.content_excerpt),
                 "anchor_labels": _detect_anchor_labels(item.summary, item.content_excerpt),
             }
@@ -355,7 +357,11 @@ def _load_related_tool_events(window: WindowInput) -> list[dict[str, Any]]:
         if current_first_dt is not None:
             first_dt = current_first_dt - timedelta(seconds=TOOL_EVENT_LOOKBACK_SECONDS)
     last_dt = _parse_dt(last.occurred_at)
-    match_without_session = first.session_id is None and window.partition_key.startswith("standalone:")
+    match_without_session = (
+        first.session_id is None
+        and window.partition_key.startswith("standalone:")
+        and not first.transcript_path
+    )
     if first.session_id is None and not match_without_session:
         return []
     with schema_locked_connection() as conn:

@@ -11,6 +11,7 @@
 
 - judge / candidate / human review 用の review ledger schema と store API を追加
 - partition / ordinal から judge 用 window payload を再構成する `judge_inputs` と deterministic signal extractor を追加
+- `kb-mcp judge review-candidates` と judge backend / runner の初期実装を追加
 
 ### Changed
 
