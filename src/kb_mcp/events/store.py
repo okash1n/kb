@@ -5,12 +5,13 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from kb_mcp.events.candidates import detect_candidates
 from kb_mcp.events.schema import schema_locked_connection
 from kb_mcp.events.types import DispatchResult, EventEnvelope, utc_now_iso
+from kb_mcp.learning.distribution import scope_distribution_metadata
 from kb_mcp.note import generate_ulid
 
 _CANDIDATE_LABELS = {"adr", "gap", "knowledge", "session_thin"}
@@ -29,6 +30,10 @@ _LEARNING_VISIBILITY = {"candidate", "active", "held", "retractable", "supersede
 
 def _store_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="microseconds")
+
+
+def utc_now_shifted(*, days: int) -> str:
+    return (datetime.now(timezone.utc) + timedelta(days=days)).isoformat(timespec="microseconds")
 
 
 class EventStore:
@@ -1743,6 +1748,110 @@ class EventStore:
             "applications": int(application_row["count"]),
         }
 
+    def learning_runtime_hygiene_metrics(
+        self,
+        *,
+        session_local_days: int = 1,
+        client_local_days: int = 7,
+    ) -> dict[str, int]:
+        if session_local_days < 0:
+            raise ValueError("session_local_days must be >= 0")
+        if client_local_days < 0:
+            raise ValueError("client_local_days must be >= 0")
+        session_cutoff = utc_now_shifted(days=-session_local_days)
+        client_cutoff = utc_now_shifted(days=-client_local_days)
+        with schema_locked_connection() as conn:
+            expired_packets = conn.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM learning_packets
+                WHERE status='active'
+                  AND expires_at IS NOT NULL
+                  AND expires_at <= ?
+                """,
+                (utc_now_iso(),),
+            ).fetchone()
+            packet_mismatches = conn.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM learning_packets lp
+                LEFT JOIN (
+                  SELECT packet_id, COUNT(*) AS actual_count
+                  FROM learning_packet_assets
+                  GROUP BY packet_id
+                ) lpa ON lpa.packet_id = lp.packet_id
+                WHERE lp.asset_count != COALESCE(lpa.actual_count, 0)
+                """
+            ).fetchone()
+            orphan_applications = conn.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM learning_applications app
+                LEFT JOIN learning_packets lp ON lp.packet_id = app.packet_id
+                WHERE lp.packet_id IS NULL
+                """
+            ).fetchone()
+            legacy_fallbacks = conn.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM learning_assets
+                WHERE lifecycle='active'
+                  AND scope IN ('user_global', 'general')
+                  AND (
+                    json_valid(traceability_json) = 0
+                    OR CASE
+                      WHEN json_valid(traceability_json) = 1
+                      THEN json_extract(traceability_json, '$.secrecy_boundary')
+                      ELSE NULL
+                    END IS NULL
+                    OR CASE
+                      WHEN json_valid(traceability_json) = 1
+                      THEN json_extract(traceability_json, '$.distribution_allowed')
+                      ELSE NULL
+                    END IS NULL
+                  )
+                """
+            ).fetchone()
+            unknown_client_packets = conn.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM learning_packets
+                WHERE source_client != 'kb-mcp'
+                  AND source_client NOT LIKE 'claude-%'
+                  AND source_client NOT LIKE 'copilot-%'
+                  AND source_client NOT LIKE 'codex-%'
+                """
+            ).fetchone()
+            stale_session_assets = conn.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM learning_assets
+                WHERE lifecycle='active'
+                  AND scope='session_local'
+                  AND updated_at <= ?
+                """,
+                (session_cutoff,),
+            ).fetchone()
+            stale_client_assets = conn.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM learning_assets
+                WHERE lifecycle='active'
+                  AND scope='client_local'
+                  AND updated_at <= ?
+                """,
+                (client_cutoff,),
+            ).fetchone()
+        return {
+            "expired_active_packets": int(expired_packets["count"]),
+            "packet_asset_mismatches": int(packet_mismatches["count"]),
+            "orphan_applications": int(orphan_applications["count"]),
+            "legacy_wide_scope_fallbacks": int(legacy_fallbacks["count"]),
+            "unknown_client_packets": int(unknown_client_packets["count"]),
+            "stale_session_local_assets": int(stale_session_assets["count"]),
+            "stale_client_local_assets": int(stale_client_assets["count"]),
+        }
+
     def get_learning_packet(self, packet_id: str) -> sqlite3.Row | None:
         with schema_locked_connection() as conn:
             return conn.execute(
@@ -1754,6 +1863,204 @@ class EventStore:
                 """,
                 (packet_id,),
             ).fetchone()
+
+    def repair_learning_packet_asset_counts(self) -> int:
+        with self.transaction() as conn:
+            rows = conn.execute(
+                """
+                SELECT lp.packet_id, COALESCE(lpa.actual_count, 0) AS actual_count
+                FROM learning_packets lp
+                LEFT JOIN (
+                  SELECT packet_id, COUNT(*) AS actual_count
+                  FROM learning_packet_assets
+                  GROUP BY packet_id
+                ) lpa ON lpa.packet_id = lp.packet_id
+                WHERE lp.asset_count != COALESCE(lpa.actual_count, 0)
+                """
+            ).fetchall()
+            for row in rows:
+                conn.execute(
+                    """
+                    UPDATE learning_packets
+                    SET asset_count=?, updated_at=?
+                    WHERE packet_id=?
+                    """,
+                    (int(row["actual_count"]), _store_now_iso(), str(row["packet_id"])),
+                )
+        return len(rows)
+
+    def list_stale_learning_asset_keys(self, *, scope: str, older_than_days: int) -> list[str]:
+        if older_than_days < 0:
+            raise ValueError("older_than_days must be >= 0")
+        if scope not in {"session_local", "client_local"}:
+            raise ValueError(f"unsupported stale scope: {scope}")
+        cutoff = utc_now_shifted(days=-older_than_days)
+        with schema_locked_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT asset_key
+                FROM learning_assets
+                WHERE lifecycle='active'
+                  AND scope=?
+                  AND updated_at <= ?
+                """,
+                (scope, cutoff),
+            ).fetchall()
+        return [str(row["asset_key"]) for row in rows]
+
+    def delete_orphan_learning_applications(self) -> int:
+        with self.transaction() as conn:
+            rows = conn.execute(
+                """
+                SELECT app.application_id
+                FROM learning_applications app
+                LEFT JOIN learning_packets lp ON lp.packet_id = app.packet_id
+                WHERE lp.packet_id IS NULL
+                """
+            ).fetchall()
+            if rows:
+                conn.executemany(
+                    "DELETE FROM learning_applications WHERE application_id=?",
+                    [(str(row["application_id"]),) for row in rows],
+                )
+        return len(rows)
+
+    def backfill_learning_traceability_defaults(self) -> int:
+        with self.transaction() as conn:
+            rows = conn.execute(
+                """
+                SELECT asset_key, memory_class, traceability_json
+                FROM learning_assets
+                WHERE lifecycle='active'
+                  AND scope IN ('user_global', 'general')
+                  AND (
+                    json_valid(traceability_json) = 0
+                    OR CASE
+                      WHEN json_valid(traceability_json) = 1
+                      THEN json_extract(traceability_json, '$.secrecy_boundary')
+                      ELSE NULL
+                    END IS NULL
+                    OR CASE
+                      WHEN json_valid(traceability_json) = 1
+                      THEN json_extract(traceability_json, '$.distribution_allowed')
+                      ELSE NULL
+                    END IS NULL
+                  )
+                """
+            ).fetchall()
+            for row in rows:
+                traceability_raw = str(row["traceability_json"] or "")
+                traceability: dict[str, Any] = {}
+                if traceability_raw:
+                    try:
+                        loaded = json.loads(traceability_raw)
+                        if isinstance(loaded, dict):
+                            traceability = dict(loaded)
+                    except json.JSONDecodeError:
+                        traceability = {}
+                metadata = scope_distribution_metadata(str(row["memory_class"]))
+                if traceability.get("distribution_allowed") is None:
+                    traceability["distribution_allowed"] = metadata["distribution_allowed"]
+                if traceability.get("secrecy_boundary") is None:
+                    traceability["secrecy_boundary"] = metadata["secrecy_boundary"]
+                conn.execute(
+                    """
+                    UPDATE learning_assets
+                    SET traceability_json=?
+                    WHERE asset_key=?
+                    """,
+                    (
+                        json.dumps(traceability, ensure_ascii=False),
+                        str(row["asset_key"]),
+                    ),
+                )
+        return len(rows)
+
+    def expire_learning_asset_runtime_hygiene(
+        self,
+        *,
+        asset_key: str,
+        reason: str,
+        invalidated_packet_count: int,
+    ) -> sqlite3.Row:
+        with self.transaction() as conn:
+            row = conn.execute(
+                "SELECT * FROM learning_assets WHERE asset_key=? LIMIT 1",
+                (asset_key,),
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"learning asset not found: {asset_key}")
+            revocation_path_raw = str(row["revocation_path_json"] or "")
+            revocation_path: dict[str, Any] = {}
+            if revocation_path_raw:
+                try:
+                    loaded = json.loads(revocation_path_raw)
+                    if isinstance(loaded, dict):
+                        revocation_path = dict(loaded)
+                except json.JSONDecodeError:
+                    revocation_path = {}
+            revocation_path.update(
+                {
+                    "action": "expire",
+                    "actor": "runtime_hygiene",
+                    "reason": reason,
+                    "invalidated_packet_count": invalidated_packet_count,
+                }
+            )
+            now = _store_now_iso()
+            conn.execute(
+                """
+                UPDATE learning_assets
+                SET lifecycle='expired',
+                    learning_state_visibility='expired',
+                    source_status='expired_by_runtime_hygiene',
+                    confidence='stale',
+                    revocation_path_json=?,
+                    updated_at=?
+                WHERE asset_key=?
+                """,
+                (
+                    json.dumps(revocation_path, ensure_ascii=False),
+                    now,
+                    asset_key,
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO learning_revocations(
+                  revocation_id, asset_key, action, actor, reason, replacement_asset_key,
+                  invalidated_packet_count, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    generate_ulid(),
+                    asset_key,
+                    "expire",
+                    "runtime_hygiene",
+                    reason,
+                    None,
+                    invalidated_packet_count,
+                    now,
+                ),
+            )
+        updated = self.get_learning_asset(asset_key)
+        if updated is None:
+            raise ValueError(f"learning asset not found after runtime hygiene expire: {asset_key}")
+        return updated
+
+    def expire_stale_learning_assets(self, *, scope: str, older_than_days: int) -> int:
+        if older_than_days < 0:
+            raise ValueError("older_than_days must be >= 0")
+        if scope not in {"session_local", "client_local"}:
+            raise ValueError(f"unsupported stale scope: {scope}")
+        asset_keys = self.list_stale_learning_asset_keys(scope=scope, older_than_days=older_than_days)
+        for asset_key in asset_keys:
+            self.expire_learning_asset_runtime_hygiene(
+                asset_key=asset_key,
+                reason=f"stale_{scope}",
+                invalidated_packet_count=0,
+            )
+        return len(asset_keys)
 
     def invalidate_learning_packets(
         self,

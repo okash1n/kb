@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 
+from kb_mcp.learning.distribution import scope_distribution_metadata
 from kb_mcp.learning.models import LearningAssetView
-from kb_mcp.learning.scope_promotion import scope_distribution_metadata
 
 
 @dataclass(frozen=True, slots=True)

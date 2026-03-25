@@ -167,6 +167,33 @@ class InstallAndDoctorTest(unittest.TestCase):
         report = run_doctor(no_version_check=True)
         self.assertIn("Dead letters: 1 ✗", report)
 
+    def test_doctor_handles_unreadable_mcp_config(self) -> None:
+        claude_json = Path(os.environ["HOME"]) / ".claude.json"
+        claude_json.parent.mkdir(parents=True, exist_ok=True)
+        claude_json.write_text("{broken", encoding="utf-8")
+
+        report = run_doctor(no_version_check=True)
+
+        self.assertIn(f"Claude MCP: {claude_json} unreadable ✗", report)
+
+    def test_doctor_handles_unreadable_codex_mcp_config(self) -> None:
+        codex_home = Path(os.environ["HOME"]) / ".codex"
+        codex_home.mkdir(parents=True, exist_ok=True)
+        config_path = codex_home / "config.toml"
+        config_path.write_text("[mcp_servers.kb]\ncommand = 'kb-mcp'\n", encoding="utf-8")
+
+        original_read_text = Path.read_text
+
+        def _read_text_with_codex_failure(path: Path, *args: object, **kwargs: object) -> str:
+            if path == config_path:
+                raise OSError("permission denied")
+            return original_read_text(path, *args, **kwargs)
+
+        with mock.patch("pathlib.Path.read_text", autospec=True, side_effect=_read_text_with_codex_failure):
+            report = run_doctor(no_version_check=True)
+
+        self.assertIn(f"Codex MCP: {config_path} unreadable ✗", report)
+
     def test_legacy_path_check_line_reports_absent_as_ok(self) -> None:
         line = _legacy_path_check_line("hooks/on-session-end.sh", present=False)
 
@@ -362,6 +389,13 @@ class InstallAndDoctorTest(unittest.TestCase):
         self.assertIn("Learning applications: 1", report)
         self.assertIn("Learning revocations: 0", report)
         self.assertIn("Learning active assets: 1", report)
+        self.assertIn("Learning expired active packets: 0 ✓", report)
+        self.assertIn("Learning packet asset mismatches: 0 ✓", report)
+        self.assertIn("Learning orphan applications: 0 ✓", report)
+        self.assertIn("Learning legacy wide-scope fallbacks: 0 ✓", report)
+        self.assertIn("Learning packets using unknown-client fallback: 0", report)
+        self.assertIn("Learning stale session-local assets: 0 ✓", report)
+        self.assertIn("Learning stale client-local assets: 0 ✓", report)
 
     @mock.patch("kb_mcp.doctor.EventStore")
     def test_doctor_handles_judge_metric_query_failure(self, store_cls: mock.Mock) -> None:
