@@ -7,6 +7,20 @@
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-03-25
+
+### Added
+
+- `kb-mcp judge materialize` と `kb-mcp judge retry-failed-materializations` を追加し、review 済み candidate の note materialize と repair retry を CLI から実行できるようにした
+- `kb-mcp hook dispatch --judge-fastpath` と fast-path backend contract を追加し、`KB_JUDGE_FASTPATH_COMMAND` 設定時だけ hook 同期 judge を試行できるようにした
+- `doctor` に materialization runtime 指標と fast-path backend / breaker 指標を追加した
+
+### Changed
+
+- `review_materialization` の no-op / repair 判定を見直し、partial outbox loss や stale review_seq の recovery を安定化した
+- bulk materialize と failed materialization retry が broken candidate / expired lease を巻き込まず継続できるようにした
+- hook wrapper は fast-path backend 未設定時に inline judge を有効化しないようにした
+
 ## [0.6.1] - 2026-03-25
 
 ### Changed

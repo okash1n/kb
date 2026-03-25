@@ -14,6 +14,7 @@ worker が checkpoint / candidate / promotion / session log へ反映する。
 [Claude/Copilot/Codex hook]
   → adapter / on-session-end.sh
   → kb-mcp hook dispatch
+  → optional fast-path judge
   → SQLite event store / outbox
   → kb-mcp worker run-once
   → checkpoint_writer / candidate_writer / promotion_planner / promotion_applier / session_finalizer
@@ -88,9 +89,11 @@ bash hooks/codex-cli/install.sh
 
 ## judge / review との関係
 
-- hook は候補判定を同期実行しない
+- `KB_JUDGE_FASTPATH_COMMAND` が設定された wrapper だけは `--judge-fastpath` を有効化し、hook 同期 judge を試行する
+- fast-path judge は contract version `1` / timeout `1.5s` / breaker 付きで、失敗時は hook 完了を優先する
 - hook が残した checkpoint を `kb-mcp judge review-candidates` が後段で再読する
 - human review は `kb-mcp judge accept` / `reject` / `relabel` から append-only ledger に保存する
+- `kb-mcp judge materialize` / `retry-failed-materializations` が accepted candidate を note へ反映する
 - `kb-mcp doctor` は judge backlog / review backlog / runtime metrics を表示する
 
 release 前の cross-client 確認例:

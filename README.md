@@ -136,6 +136,8 @@ kb-mcp doctor
 | `kb-mcp judge accept <candidate-key>` | review 候補を accept する |
 | `kb-mcp judge reject <candidate-key>` | review 候補を reject する |
 | `kb-mcp judge relabel <candidate-key> --label <label>` | review 候補を別ラベルへ relabel する |
+| `kb-mcp judge materialize [<candidate-key>]` | accepted / relabeled candidate を note materialize する |
+| `kb-mcp judge retry-failed-materializations` | failed / repair_pending materialization を再投入する |
 
 バージョン確認:
 ```bash
@@ -163,6 +165,13 @@ judge / review の流れ:
 1. `kb-mcp judge review-candidates` で checkpoint window を再読して候補を作る
 2. `kb-mcp doctor` で pending backlog / judge failure を確認する
 3. `kb-mcp judge accept` / `reject` / `relabel` で human verdict を review ledger に保存する
+4. `kb-mcp judge materialize` / `retry-failed-materializations` で accepted candidate を note へ反映する
+
+fast-path judge:
+- `KB_JUDGE_FASTPATH_COMMAND` を設定した hook wrapper だけが `hook dispatch --judge-fastpath` を有効にする
+- fast-path backend は contract version `1` と timeout `1.5s` を使う
+- backend 未設定 / timeout / breaker open 時は hook 完了を優先し、fallback judge は後段 review を塞がない prompt version で記録する
+- 通常経路は `hook -> dispatch -> worker` のままで、fast-path judge は optional な inline 分岐としてだけ動く
 
 cross-client 前提:
 - Claude / Copilot / Codex の hook はすべて checkpoint 入力として扱う
@@ -170,7 +179,7 @@ cross-client 前提:
 
 release 前の最小確認:
 ```bash
-uv run python -m unittest tests.test_judge_cli tests.test_judge_review_cli tests.test_install_and_doctor tests.test_event_pipeline tests.test_judge_inputs tests.test_cli_version -v
+uv run python -m unittest tests.test_judge_cli tests.test_judge_review_cli tests.test_materialize_cli tests.test_fastpath_judge tests.test_install_and_doctor tests.test_event_pipeline tests.test_judge_inputs tests.test_cli_version -v
 python -m compileall src tests
 uv build
 kb-mcp doctor --no-version-check
