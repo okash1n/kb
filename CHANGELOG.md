@@ -7,6 +7,12 @@
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-03-25
+
+### Changed
+
+- `doctor` の legacy path 表示で `not present ✓` / `present ✗` を明示し、legacy repo path 検出時を cleanup candidate として示すようにした
+
 ## [0.6.0] - 2026-03-25
 
 ### Added
