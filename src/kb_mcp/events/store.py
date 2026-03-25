@@ -1877,6 +1877,12 @@ class EventStore:
             row = conn.execute("SELECT COUNT(*) AS count FROM learning_revocations").fetchone()
             return int(row["count"])
 
+    def learning_outcome_metrics(self) -> dict[str, int]:
+        from kb_mcp.learning.metrics import compute_learning_outcome_metrics
+
+        with schema_locked_connection() as conn:
+            return compute_learning_outcome_metrics(conn)
+
     def learning_visibility_counts(self) -> dict[str, int]:
         with schema_locked_connection() as conn:
             rows = conn.execute(
