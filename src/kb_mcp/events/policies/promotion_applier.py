@@ -12,7 +12,16 @@ from kb_mcp.config import projects_dir, runtime_events_dir, safe_resolve
 from kb_mcp.events.identity import sink_receipt
 from kb_mcp.events.request_context import REQUEST_CONTEXT
 from kb_mcp.events.store import EventStore
-from kb_mcp.note import build_filename, build_session_filename, generate_ulid, parse_frontmatter, slugify
+from kb_mcp.note import (
+    build_filename,
+    build_session_filename,
+    generate_ulid,
+    parse_markdown_note,
+    parse_frontmatter,
+    sha256_text,
+    slugify,
+    update_markdown_note,
+)
 from kb_mcp.resolver import resolve_project
 from kb_mcp.tools.save import kb_session, save_note_by_type
 
@@ -169,6 +178,25 @@ def _record_materialized_note(
     note_path: str | None,
     lease_owner: str,
 ) -> None:
+    if not note_id or not note_path:
+        raise RuntimeError("materialized note metadata is missing")
+    if not store.record_materialization_note_result(
+        materialization_key=str(plan["materialization_key"]),
+        lease_owner=lease_owner,
+        lease_epoch=int(record["lease_epoch"]),
+        note_id=note_id,
+        note_path=note_path,
+        promotion_key=str(plan["promotion_key"]),
+    ):
+        raise RuntimeError("materialization lease was lost before recording note result")
+    if str(plan["note_type"]) == "adr":
+        _apply_adr_supersede_update(
+            store=store,
+            record=record,
+            plan=plan,
+            new_note_id=note_id,
+            lease_owner=lease_owner,
+        )
     finalized = store.finalize_materialization_record(
         materialization_key=str(plan["materialization_key"]),
         lease_owner=lease_owner,
@@ -363,3 +391,113 @@ def _heartbeat_loop(
 def _ensure_lease_held(lost_lease: threading.Event) -> None:
     if lost_lease.is_set():
         raise RuntimeError("materialization lease was lost during apply")
+
+
+def _apply_adr_supersede_update(
+    *,
+    store: EventStore,
+    record: sqlite3.Row,
+    plan: dict[str, object],
+    new_note_id: str,
+    lease_owner: str,
+) -> None:
+    target = plan.get("supersede_target")
+    if not isinstance(target, dict):
+        return
+    note_id = str(target.get("note_id") or "")
+    if not note_id:
+        raise RuntimeError("supersede target is missing note_id")
+    note_path = _resolve_note_path(
+        project=str(plan["project"]) if plan.get("project") else None,
+        cwd=str(plan["cwd"]) if plan.get("cwd") else None,
+        repo=str(plan["repo"]) if plan.get("repo") else None,
+        note_type="adr",
+        note_id=note_id,
+        path_hint=str(target.get("note_path") or "") or None,
+    )
+    if not note_path:
+        raise RuntimeError(f"could not resolve supersede target note: {note_id}")
+    request_key = f"materialize:{plan['materialization_key']}:frontmatter_merge:1"
+    if store.get_note_mutation(note_id=note_id, request_key=request_key) is not None:
+        return
+    current_text = Path(note_path).read_text(encoding="utf-8")
+    frontmatter, _ = parse_markdown_note(current_text)
+    related = [str(item) for item in frontmatter.get("related") or []]
+    if frontmatter.get("status") == "superseded" and new_note_id in related:
+        digest = sha256_text(current_text)
+        if not store.record_note_mutation(
+            mutation_id=generate_ulid(),
+            note_id=note_id,
+            note_path=note_path,
+            mutation_kind="frontmatter_merge",
+            request_key=request_key,
+            before_sha256=digest,
+            after_sha256=digest,
+            payload={
+                "materialization_key": str(plan["materialization_key"]),
+                "new_note_id": new_note_id,
+                "lease_owner": lease_owner,
+                "lease_epoch": int(record["lease_epoch"]),
+                "recovered": True,
+            },
+        ):
+            if store.get_note_mutation(note_id=note_id, request_key=request_key) is None:
+                raise RuntimeError("failed to backfill note mutation")
+        return
+    mutation = update_markdown_note(
+        Path(note_path),
+        frontmatter_patch={"status": "superseded", "related": [new_note_id]},
+    )
+    if not store.record_note_mutation(
+        mutation_id=generate_ulid(),
+        note_id=note_id,
+        note_path=note_path,
+        mutation_kind="frontmatter_merge",
+        request_key=request_key,
+        before_sha256=mutation["before_sha256"],
+        after_sha256=mutation["after_sha256"],
+        payload={
+            "materialization_key": str(plan["materialization_key"]),
+            "new_note_id": new_note_id,
+            "lease_owner": lease_owner,
+            "lease_epoch": int(record["lease_epoch"]),
+        },
+    ):
+        if store.get_note_mutation(note_id=note_id, request_key=request_key) is None:
+            raise RuntimeError("failed to record note mutation")
+
+
+def _resolve_note_path(
+    *,
+    project: str | None,
+    cwd: str | None,
+    repo: str | None,
+    note_type: str,
+    note_id: str,
+    path_hint: str | None,
+) -> str | None:
+    if note_id:
+        resolved_project, _ = resolve_project(project=project, cwd=cwd, repo=repo)
+        if resolved_project:
+            found = _find_note_by_id(project=resolved_project, note_type=note_type, note_id=note_id)
+            if found is not None:
+                return found
+    if path_hint:
+        path = Path(path_hint)
+        if path.exists():
+            frontmatter = parse_frontmatter(path.read_text(encoding="utf-8")) or {}
+            if frontmatter.get("id") == note_id:
+                return str(path)
+    return None
+
+
+def _find_note_by_id(*, project: str, note_type: str, note_id: str) -> str | None:
+    directory = safe_resolve(projects_dir(), project, _note_subdir(note_type))
+    for path in directory.glob("*.md"):
+        try:
+            frontmatter = parse_frontmatter(path.read_text(encoding="utf-8")) or {}
+        except OSError:
+            continue
+        if frontmatter.get("id") == note_id:
+            return str(path)
+    return None
