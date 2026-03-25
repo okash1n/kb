@@ -14,7 +14,7 @@ SourceLayer = Literal[
     "recovery_sweeper",
     "transcript_fallback",
 ]
-AggregateType = Literal["session", "tool", "error", "compact"]
+AggregateType = Literal["session", "tool", "error", "compact", "review_materialization"]
 LogicalStatus = Literal["collecting", "pending_finalization", "ready", "applied", "dead_letter"]
 ManagementMode = Literal["launcher", "hook", "unmanaged"]
 
