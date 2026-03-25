@@ -7,6 +7,17 @@
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-03-26
+
+### Added
+
+- `kb-mcp judge build-policy-snapshots` を追加し、active learning asset から user/project policy snapshot を runtime 配下へ生成できるようにした
+- `policy_projection` / `policy_snapshot` を追加し、project-local と user-global の governed learning policy を deterministic に投影できるようにした
+
+### Changed
+
+- `kb_graduate` は runtime policy snapshot がある場合にそれを参照する read-only surface として振る舞うようにした
+
 ## [0.12.0] - 2026-03-26
 
 ### Added
