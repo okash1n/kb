@@ -168,27 +168,19 @@ class InstallAndDoctorTest(unittest.TestCase):
         self.assertIn("Dead letters: 1 ✗", report)
 
     def test_legacy_path_check_line_reports_absent_as_ok(self) -> None:
-        fake_path = mock.Mock()
-        fake_path.exists.return_value = False
-        fake_path.__str__ = mock.Mock(return_value="hooks/on-session-end.sh")
-
-        line = _legacy_path_check_line(fake_path)
+        line = _legacy_path_check_line("hooks/on-session-end.sh", present=False)
 
         self.assertEqual(
             line,
-            "  Legacy path present check: hooks/on-session-end.sh not present ✓",
+            "  Legacy path present: hooks/on-session-end.sh not present ✓",
         )
 
     def test_legacy_path_check_line_reports_present_as_cleanup_candidate(self) -> None:
-        fake_path = mock.Mock()
-        fake_path.exists.return_value = True
-        fake_path.__str__ = mock.Mock(return_value="install/hooks.sh")
-
-        line = _legacy_path_check_line(fake_path)
+        line = _legacy_path_check_line("install/hooks.sh", present=True)
 
         self.assertEqual(
             line,
-            "  Legacy path present check: install/hooks.sh present ✗ (legacy repo path detected; cleanup if unused)",
+            "  Legacy path present: install/hooks.sh present ✗ (legacy repo path detected; cleanup if unused)",
         )
 
     def test_doctor_reports_judge_and_review_counts(self) -> None:

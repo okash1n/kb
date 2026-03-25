@@ -55,13 +55,20 @@ def _fmt_info(label: str, value: str) -> str:
     return f"{label}: {value}"
 
 
-def _legacy_path_check_line(path: Path) -> str:
-    if path.exists():
+def _legacy_path_check_line(display_path: str, *, present: bool) -> str:
+    if present:
         return (
-            f"  Legacy path present check: {path} present ✗ "
+            f"  Legacy path present: {display_path} present ✗ "
             "(legacy repo path detected; cleanup if unused)"
         )
-    return f"  Legacy path present check: {path} not present ✓"
+    return f"  Legacy path present: {display_path} not present ✓"
+
+
+def _source_checkout_root() -> Path | None:
+    root = Path(__file__).resolve().parents[2]
+    if (root / "pyproject.toml").exists() and (root / "src" / "kb_mcp" / "doctor.py").exists():
+        return root
+    return None
 
 
 def _tool_checks() -> list[str]:
@@ -108,12 +115,18 @@ def _tool_checks() -> list[str]:
     lines.append(f"  Claude MCP config: {claude_mcp} {'✓' if claude_mcp.exists() else '✗'}")
     lines.append(f"  Wrapper dir: {hooks_lib_dir()} {'✓' if hooks_lib_dir().exists() else '✗'}")
 
+    source_root = _source_checkout_root()
     legacy_paths = [
-        Path("hooks/on-session-end.sh"),
-        Path("install/hooks.sh"),
+        ("hooks/on-session-end.sh", (source_root / "hooks" / "on-session-end.sh") if source_root else None),
+        ("install/hooks.sh", (source_root / "install" / "hooks.sh") if source_root else None),
     ]
-    for path in legacy_paths:
-        lines.append(_legacy_path_check_line(path))
+    for display_path, check_path in legacy_paths:
+        lines.append(
+            _legacy_path_check_line(
+                display_path,
+                present=check_path.exists() if check_path is not None else False,
+            )
+        )
     return lines
 
 

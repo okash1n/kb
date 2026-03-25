@@ -11,7 +11,7 @@
 
 ### Changed
 
-- `doctor` の legacy path 表示を `Legacy path present check` に変更し、legacy file が無い通常運用を `✓`、legacy repo path 検出時を cleanup candidate として示すようにした
+- `doctor` の legacy path 表示で `not present ✓` / `present ✗` を明示し、legacy repo path 検出時を cleanup candidate として示すようにした
 
 ## [0.6.0] - 2026-03-25
 
