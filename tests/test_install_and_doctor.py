@@ -12,6 +12,7 @@ import yaml
 
 from kb_mcp.config import load_config
 from kb_mcp.events.scheduler import scheduler_marker_path
+from kb_mcp.events.store import EventStore
 from kb_mcp.doctor import run_doctor
 from kb_mcp.install_hooks import install_claude, install_codex, install_copilot
 
@@ -133,8 +134,37 @@ class InstallAndDoctorTest(unittest.TestCase):
         )
         report = run_doctor(no_version_check=True)
         self.assertIn("Event DB", report)
+        self.assertIn("Dead letters", report)
+        self.assertIn("Promotion plans", report)
         self.assertIn("Claude hooks", report)
         self.assertIn("Codex hooks", report)
+
+    def test_doctor_reports_nonzero_dead_letters(self) -> None:
+        store = EventStore()
+        with store.transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO logical_events(
+                  logical_key, aggregate_type, correlation_id, session_id, management_mode,
+                  source_tool, source_client, status, aggregate_version, summary, content_excerpt,
+                  cwd, repo, project, transcript_path, final_outcome, debug_only_reason,
+                  aggregate_state_json, ready_at, updated_at
+                ) VALUES (
+                  'compact:test:1', 'compact', NULL, NULL, 'hook',
+                  'codex', 'codex-cli', 'ready', 1, 'summary', 'excerpt',
+                  NULL, NULL, NULL, NULL, NULL, NULL,
+                  '{}', '2026-03-25T00:00:00+00:00', '2026-03-25T00:00:00+00:00'
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO outbox(logical_key, aggregate_version, sink_name, status, due_at, claimed_at, last_error, created_at)
+                VALUES ('compact:test:1', 1, 'checkpoint_writer', 'dead_letter', '2026-03-25T00:00:00+00:00', NULL, 'boom', '2026-03-25T00:00:00+00:00')
+                """
+            )
+        report = run_doctor(no_version_check=True)
+        self.assertIn("Dead letters: 1 ✗", report)
 
     @mock.patch("shutil.which", return_value="/tmp/kb-mcp")
     def test_install_codex_wrapper_suppresses_stdout(self, _which: mock.Mock) -> None:

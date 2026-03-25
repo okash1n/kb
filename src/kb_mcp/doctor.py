@@ -7,7 +7,9 @@ import shutil
 from pathlib import Path
 
 from kb_mcp.config import config_dir, load_config, runtime_events_db_path
+from kb_mcp.events.store import EventStore
 from kb_mcp.events.scheduler import scheduler_installed, scheduler_platform
+from kb_mcp.events.schema import SCHEMA_VERSION
 from kb_mcp.install_hooks import (
     claude_config_dir,
     claude_config_json,
@@ -35,7 +37,9 @@ def run_doctor(*, no_version_check: bool = False) -> str:
 
     db_path = runtime_events_db_path()
     lines.append(_fmt("Event DB", str(db_path), db_path.exists()))
+    lines.append(_fmt("Event schema", f"v{SCHEMA_VERSION}", db_path.exists()))
     lines.append(_fmt("Scheduler", scheduler_platform(), scheduler_installed()))
+    lines.extend(_runtime_checks())
     lines.append("")
     lines.extend(_tool_checks())
     return "\n".join(lines)
@@ -97,6 +101,22 @@ def _tool_checks() -> list[str]:
     for path in legacy_paths:
         lines.append(f"  Legacy path present: {path} {'✓' if path.exists() else '✗'}")
     return lines
+
+
+def _runtime_checks() -> list[str]:
+    root = config_dir() / "runtime" / "events"
+    checkpoints = len(list((root / "checkpoints").glob("*.json"))) if (root / "checkpoints").exists() else 0
+    candidates = len(list((root / "candidates").glob("*.json"))) if (root / "candidates").exists() else 0
+    promotions = len(list((root / "promotions").glob("*.json"))) if (root / "promotions").exists() else 0
+    records = len(list((root / "promotion-records").glob("*.json"))) if (root / "promotion-records").exists() else 0
+    dead_letters = EventStore().dead_letter_count() if runtime_events_db_path().exists() else 0
+    return [
+        _fmt("Checkpoints", str(checkpoints), True),
+        _fmt("Candidates", str(candidates), True),
+        _fmt("Promotion plans", str(promotions), True),
+        _fmt("Promotion records", str(records), True),
+        _fmt("Dead letters", str(dead_letters), dead_letters == 0),
+    ]
 
 
 def check_mcp_registered(tool: str) -> tuple[bool, str]:

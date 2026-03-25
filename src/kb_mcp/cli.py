@@ -526,6 +526,8 @@ def cmd_hook_dispatch(args: argparse.Namespace) -> None:
 def cmd_worker(args: argparse.Namespace) -> None:
     """Run worker maintenance or drain once."""
     from kb_mcp.events.worker import run_once
+    from kb_mcp.events.retention import cleanup_runtime_artifacts
+    from kb_mcp.events.store import EventStore
 
     if args.worker_command == "run-once":
         result = run_once(maintenance=args.maintenance)
@@ -533,6 +535,19 @@ def cmd_worker(args: argparse.Namespace) -> None:
         return
     if args.worker_command == "drain":
         result = run_once(maintenance=True, limit=args.limit)
+        print(json.dumps(result, ensure_ascii=False))
+        return
+    if args.worker_command == "replay-dead-letter":
+        replayed = EventStore().replay_dead_letters(limit=args.limit)
+        print(json.dumps({"replayed": replayed}, ensure_ascii=False))
+        return
+    if args.worker_command == "cleanup-runtime":
+        result = cleanup_runtime_artifacts(
+            checkpoint_days=args.checkpoints_days,
+            candidate_days=args.candidates_days,
+            promotion_days=args.promotions_days,
+            record_days=args.records_days,
+        )
         print(json.dumps(result, ensure_ascii=False))
         return
     raise ValueError(f"Unknown worker command: {args.worker_command}")
@@ -705,6 +720,13 @@ def build_parser() -> argparse.ArgumentParser:
     run_once_parser.add_argument("--maintenance", action="store_true", help="Promote pending finalization before drain")
     drain_parser = worker_sub.add_parser("drain", help="Maintenance drain")
     drain_parser.add_argument("--limit", type=int, default=50)
+    replay_parser = worker_sub.add_parser("replay-dead-letter", help="Requeue dead-letter sinks")
+    replay_parser.add_argument("--limit", type=int, default=50)
+    cleanup_parser = worker_sub.add_parser("cleanup-runtime", help="Delete stale runtime artifacts")
+    cleanup_parser.add_argument("--checkpoints-days", type=int, default=7)
+    cleanup_parser.add_argument("--candidates-days", type=int, default=14)
+    cleanup_parser.add_argument("--promotions-days", type=int, default=30)
+    cleanup_parser.add_argument("--records-days", type=int, default=30)
 
     # session run
     session_parser = sub.add_parser("session", help="Managed session commands")

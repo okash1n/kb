@@ -5,6 +5,7 @@ import stat
 import tempfile
 import unittest
 import json
+import time
 from unittest.mock import patch
 from pathlib import Path
 
@@ -350,6 +351,48 @@ class EventPipelineTest(unittest.TestCase):
         self.assertEqual(fm.get("density"), "thin")
         self.assertIn("最初のやりとり", text)
         self.assertIn("ここで一区切り", text)
+
+    def test_dead_letter_can_be_replayed(self) -> None:
+        store = EventStore()
+        payload = {
+            "project": self.project,
+            "cwd": str(self.vault),
+            "session_id": "session-dead-letter",
+            "summary": "Turn finished",
+            "content": "Short turn excerpt",
+        }
+        result = store.append(
+            normalize_event(tool="codex", client="codex-cli", layer="client_hook", event="turn_checkpointed", payload=payload)
+        )
+        with store.transaction() as conn:
+            conn.execute(
+                "UPDATE outbox SET status='dead_letter', last_error='boom' WHERE logical_key=? AND sink_name='checkpoint_writer'",
+                (result.logical_key,),
+            )
+        self.assertEqual(store.dead_letter_count(), 1)
+        replayed = store.replay_dead_letters(limit=10)
+        self.assertEqual(replayed, 1)
+        with store.transaction() as conn:
+            row = conn.execute(
+                "SELECT status, last_error FROM outbox WHERE logical_key=? AND sink_name='checkpoint_writer'",
+                (result.logical_key,),
+            ).fetchone()
+        self.assertEqual(row["status"], "ready")
+        self.assertIsNone(row["last_error"])
+
+    def test_cleanup_runtime_artifacts_removes_stale_files(self) -> None:
+        from kb_mcp.events.retention import cleanup_runtime_artifacts
+
+        checkpoints = self.config_dir / "runtime" / "events" / "checkpoints"
+        checkpoints.mkdir(parents=True, exist_ok=True)
+        old_file = checkpoints / "old.json"
+        old_file.write_text("{}", encoding="utf-8")
+        stale = time.time() - 10 * 24 * 60 * 60
+        os.utime(old_file, (stale, stale))
+
+        removed = cleanup_runtime_artifacts(checkpoint_days=7)
+        self.assertEqual(removed["checkpoints"], 1)
+        self.assertFalse(old_file.exists())
 
     def test_transcript_excerpt_wins_over_summary_when_content_missing(self) -> None:
         transcript = self.vault / "transcript.txt"

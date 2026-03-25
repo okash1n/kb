@@ -148,6 +148,38 @@ class EventStore:
                 (key, severity, message, payload, utc_now_iso()),
             )
 
+    def dead_letter_count(self) -> int:
+        with self.transaction() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS count FROM outbox WHERE status='dead_letter'"
+            ).fetchone()
+            return int(row["count"])
+
+    def replay_dead_letters(self, *, limit: int = 50) -> int:
+        with self.transaction() as conn:
+            rows = conn.execute(
+                """
+                SELECT id
+                FROM outbox
+                WHERE status='dead_letter'
+                ORDER BY id
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+            if not rows:
+                return 0
+            now = utc_now_iso()
+            conn.executemany(
+                """
+                UPDATE outbox
+                SET status='ready', claimed_at=NULL, last_error=NULL, due_at=?
+                WHERE id=?
+                """,
+                [(now, row["id"]) for row in rows],
+            )
+            return len(rows)
+
     @contextmanager
     def transaction(self) -> sqlite3.Connection:
         with schema_locked_connection() as conn:
