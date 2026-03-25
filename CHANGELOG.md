@@ -7,6 +7,18 @@
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-03-26
+
+### Added
+
+- `docs/governed-runtime-learning-contract.md` を追加し、governed runtime learning contract の中核概念、runtime semantics、serving / apply / governance の接続面を README から辿れるようにした
+- `tests/test_cli_surface.py` を追加し、worker / judge の learning runtime surface が CLI parser から消えないことを回帰テストで固定した
+
+### Changed
+
+- README を更新し、governed runtime learning の現在地、judge governance command、runtime hygiene command、関連ドキュメントへの導線を実装 surface に合わせて統合した
+- `0.8.0` から `0.16.0` まで追加した learning runtime / governance / repair surface を `0.17.0` の統合到達版として整理した
+
 ## [0.16.0] - 2026-03-26
 
 ### Added

@@ -2,6 +2,13 @@
 
 複数プロジェクト × 複数AIの共通コンテキスト基盤。ローカルMCPサーバーとして動作する。
 
+kb は単なるノート置き場ではなく、AI がセッションをまたいで成長するための共有学習基盤を目指している。
+Claude、Copilot、Codex のような複数の AI が、`gap`、`knowledge`、`adr` を通じて「ユーザーが AI に求めること」と「そのプロジェクトで積み上がった判断や知見」を学び、次のやり取りで自然に活かせる状態を作る。
+
+目標は 2 つある。
+- 単体 AI が、過去の失敗や判断を踏まえて継続的に賢くなること
+- AI チーム全体が、同じユーザー・同じプロジェクト文脈を共有しながら揃って成長していくこと
+
 ## 技術スタック
 
 - Python + uv
@@ -130,6 +137,7 @@ kb-mcp doctor
 | `kb-mcp worker run-once` | due な sink を 1 回 drain する |
 | `kb-mcp worker replay-dead-letter` | dead-letter 化した sink を ready に戻す |
 | `kb-mcp worker cleanup-runtime` | 古い runtime artifact を削除する |
+| `kb-mcp worker repair-learning-runtime` | learning packet / asset / application の runtime hygiene を補修する |
 | `kb-mcp session run` | launcher 管理下で AI セッションを起動する |
 | `kb-mcp doctor` | config, event DB, scheduler, hooks, judge/review runtime を診断する |
 | `kb-mcp judge review-candidates` | checkpoint window を judge して review 候補を生成する |
@@ -137,6 +145,12 @@ kb-mcp doctor
 | `kb-mcp judge reject <candidate-key>` | review 候補を reject する |
 | `kb-mcp judge relabel <candidate-key> --label <label>` | review 候補を別ラベルへ relabel する |
 | `kb-mcp judge materialize [<candidate-key>]` | accepted / relabeled candidate を note materialize する |
+| `kb-mcp judge learning-state` | learning asset の visibility と主要属性を確認する |
+| `kb-mcp judge retract-learning <asset-key> --reason <reason>` | active learning asset を撤回する |
+| `kb-mcp judge supersede-learning <asset-key> --replacement-asset-key <asset-key> --reason <reason>` | learning asset を後継 asset で supersede する |
+| `kb-mcp judge expire-learning --before <timestamp> --reason <reason>` | stale learning asset を期限切れにする |
+| `kb-mcp judge build-policy-snapshots` | active learning asset から runtime policy snapshot を生成する |
+| `kb-mcp judge promote-scopes` | active project-local asset を wider scope へ昇格する |
 | `kb-mcp judge retry-failed-materializations` | failed / repair_pending materialization を再投入する |
 
 バージョン確認:
@@ -166,6 +180,15 @@ judge / review の流れ:
 2. `kb-mcp doctor` で pending backlog / judge failure を確認する
 3. `kb-mcp judge accept` / `reject` / `relabel` で human verdict を review ledger に保存する
 4. `kb-mcp judge materialize` / `retry-failed-materializations` で accepted candidate を note へ反映する
+
+runtime hygiene:
+- `kb-mcp doctor` は expired packet / orphan application / stale local asset を表示する
+- `kb-mcp worker repair-learning-runtime` は doctor で見つかった learning runtime の補修を行う
+- 詳細は [docs/learning-runtime-hygiene.md](docs/learning-runtime-hygiene.md) を参照
+
+learning contract:
+- governed runtime learning contract の要点と command map は [docs/governed-runtime-learning-contract.md](docs/governed-runtime-learning-contract.md) を参照
+- client ごとの配布制約は [docs/learning-client-capabilities.md](docs/learning-client-capabilities.md) を参照
 
 fast-path judge:
 - `KB_JUDGE_FASTPATH_COMMAND` を設定した hook wrapper だけが `hook dispatch --judge-fastpath` を有効にする
