@@ -131,7 +131,11 @@ kb-mcp doctor
 | `kb-mcp worker replay-dead-letter` | dead-letter 化した sink を ready に戻す |
 | `kb-mcp worker cleanup-runtime` | 古い runtime artifact を削除する |
 | `kb-mcp session run` | launcher 管理下で AI セッションを起動する |
-| `kb-mcp doctor` | config, event DB, scheduler, hooks を診断する |
+| `kb-mcp doctor` | config, event DB, scheduler, hooks, judge/review runtime を診断する |
+| `kb-mcp judge review-candidates` | checkpoint window を judge して review 候補を生成する |
+| `kb-mcp judge accept <candidate-key>` | review 候補を accept する |
+| `kb-mcp judge reject <candidate-key>` | review 候補を reject する |
+| `kb-mcp judge relabel <candidate-key> --label <label>` | review 候補を別ラベルへ relabel する |
 
 バージョン確認:
 ```bash
@@ -154,6 +158,23 @@ memory promotion の考え方:
 - 全 hook はまず checkpoint として保存する
 - `gap` / `knowledge` / `adr` が anchor になった時だけ rich `session-log` を昇格する
 - `final_hint` 付き checkpoint は thin `session-log` の区切り候補に使う
+
+judge / review の流れ:
+1. `kb-mcp judge review-candidates` で checkpoint window を再読して候補を作る
+2. `kb-mcp doctor` で pending backlog / judge failure を確認する
+3. `kb-mcp judge accept` / `reject` / `relabel` で human verdict を review ledger に保存する
+
+cross-client 前提:
+- Claude / Copilot / Codex の hook はすべて checkpoint 入力として扱う
+- vendor 固有 tool hook がなくても、server middleware event と checkpoint text から judge 入力を組み立てる
+
+release 前の最小確認:
+```bash
+uv run python -m unittest tests.test_judge_cli tests.test_judge_review_cli tests.test_install_and_doctor tests.test_event_pipeline tests.test_judge_inputs tests.test_cli_version -v
+python -m compileall src tests
+uv build
+kb-mcp doctor --no-version-check
+```
 
 ## ファイル命名
 

@@ -7,6 +7,8 @@
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-03-25
+
 ### Added
 
 - judge / candidate / human review 用の review ledger schema と store API を追加
@@ -16,7 +18,7 @@
 
 ### Changed
 
-- event DB schema version を `3` に上げる準備を進めた
+- event DB schema version を `3` に上げ、review ledger migration を有効化した
 - `topic_shift_candidate` と `knowledge` 補助 signal を cross-client 共通ルールで抽出するようにした
 - `doctor` に judge backlog / review ledger / runtime metric failure の診断を追加した
 - review suggestion を pending backlog 基準に変更し、新規候補流入時の再提示を安定化した
