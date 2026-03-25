@@ -566,3 +566,50 @@ class JudgeInputsTest(unittest.TestCase):
         windows = build_windows(partition_key)
         payload = build_window_payload(windows[0])
         self.assertTrue(payload["knowledge_signals"]["constraint_confirmed"])
+
+    def test_build_window_payload_skips_standalone_fallback_when_transcript_exists(self) -> None:
+        store = EventStore()
+        checkpoint = {
+            "project": self.project,
+            "repo": "demo/repo",
+            "cwd": str(self.vault),
+            "transcript_path": str(self.vault / "standalone.jsonl"),
+            "summary": "制約を確認した",
+            "content": "doctor で制約を確認できた",
+            "occurred_at": "2026-03-25T00:00:00+00:00",
+        }
+        store.append(
+            normalize_event(
+                tool="copilot",
+                client="copilot-cli",
+                layer="client_hook",
+                event="turn_checkpointed",
+                payload=checkpoint,
+            )
+        )
+        store.append(
+            normalize_event(
+                tool="kb",
+                client="kb-mcp",
+                layer="server_middleware",
+                event="tool_succeeded",
+                payload={
+                    "project": self.project,
+                    "repo": "demo/repo",
+                    "cwd": str(self.vault),
+                    "tool_name": "doctor",
+                    "tool_call_id": "tool-standalone-transcript",
+                    "occurred_at": "2026-03-24T23:59:50+00:00",
+                },
+            )
+        )
+        partition_key = normalize_event(
+            tool="copilot",
+            client="copilot-cli",
+            layer="client_hook",
+            event="turn_checkpointed",
+            payload=checkpoint,
+        ).aggregate_state["checkpoint_partition_key"]
+        windows = build_windows(partition_key)
+        payload = build_window_payload(windows[0])
+        self.assertFalse(payload["knowledge_signals"]["constraint_confirmed"])
