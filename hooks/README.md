@@ -56,6 +56,7 @@ kb-mcp install hooks --claude --execute
 - Claude / Copilot / Codex の Stop 相当 hook は全部 checkpoint として扱う
 - hook 同期パスで直接 `session-log` を作らない
 - `gap` / `knowledge` / `adr` 保存や `final_hint` 付き checkpoint をきっかけに、後段 worker が `session-log` を昇格する
+- vendor 固有 tool hook が無くても、server middleware event と checkpoint text を使って judge 候補を再構成する
 
 ### ツール別
 
@@ -84,6 +85,19 @@ bash hooks/codex-cli/install.sh
 ```
 
 > Codex CLI の hooks は experimental。安定するまでは skills + MCP を先に使うことを推奨。
+
+## judge / review との関係
+
+- hook は候補判定を同期実行しない
+- hook が残した checkpoint を `kb-mcp judge review-candidates` が後段で再読する
+- human review は `kb-mcp judge accept` / `reject` / `relabel` から append-only ledger に保存する
+- `kb-mcp doctor` は judge backlog / review backlog / runtime metrics を表示する
+
+release 前の cross-client 確認例:
+- `kb-mcp install hooks --claude --execute`
+- `kb-mcp install hooks --copilot --execute`
+- `kb-mcp install hooks --codex`
+- `kb-mcp doctor --no-version-check`
 
 ## 使い方（手動実行 / 互換 shim）
 
