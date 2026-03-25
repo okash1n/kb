@@ -7,9 +7,13 @@
 
 ## [Unreleased]
 
+### Added
+
+- judge / candidate / human review 用の review ledger schema と store API を追加
+
 ### Changed
 
-- まだ未整理
+- event DB schema version を `3` に上げる準備を進めた
 
 ## [0.5.1] - 2026-03-25
 

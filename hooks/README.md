@@ -54,7 +54,7 @@ kb-mcp install hooks --claude --execute
 ## 現在の保存方針
 
 - Claude / Copilot / Codex の Stop 相当 hook は全部 checkpoint として扱う
-- hook 同期パスで直接 `session-log` を作らへん
+- hook 同期パスで直接 `session-log` を作らない
 - `gap` / `knowledge` / `adr` 保存や `final_hint` 付き checkpoint をきっかけに、後段 worker が `session-log` を昇格する
 
 ### ツール別
