@@ -11,11 +11,14 @@ from typing import Any
 from kb_mcp.events.candidates import detect_candidates
 from kb_mcp.events.schema import schema_locked_connection
 from kb_mcp.events.types import DispatchResult, EventEnvelope, utc_now_iso
+from kb_mcp.note import generate_ulid
 
 _CANDIDATE_LABELS = {"adr", "gap", "knowledge", "session_thin"}
-_CANDIDATE_STATUSES = {"pending_review", "accepted", "rejected", "materialized"}
+_CANDIDATE_STATUSES = {"pending_review", "accepted", "rejected", "relabeled", "materialized"}
 _JUDGE_STATUSES = {"ready", "judged", "superseded", "failed"}
 _HUMAN_VERDICTS = {"accepted", "rejected", "relabeled"}
+_MATERIALIZATION_STATUSES = {"planned", "applying", "applied", "repair_pending", "failed", "superseded"}
+_REVIEW_MATERIALIZATION_SINKS = ("promotion_planner", "promotion_applier")
 
 
 def _store_now_iso() -> str:
@@ -28,43 +31,7 @@ class EventStore:
     def append(self, envelope: EventEnvelope) -> DispatchResult:
         """Persist an event and merge it into an aggregate."""
         with self.transaction() as conn:
-            _assign_checkpoint_identity(conn, envelope)
-            conn.execute(
-                """
-                INSERT INTO events(
-                  event_id, occurred_at, received_at, source_tool, source_client,
-                  source_layer, event_name, aggregate_type, management_mode, logical_key,
-                  correlation_id, session_id, tool_call_id, error_fingerprint, summary,
-                  content_excerpt, cwd, repo, project, transcript_path, raw_payload_json,
-                  redacted_payload_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    envelope.event_id,
-                    envelope.occurred_at,
-                    envelope.received_at,
-                    envelope.source_tool,
-                    envelope.source_client,
-                    envelope.source_layer,
-                    envelope.event_name,
-                    envelope.aggregate_type,
-                    envelope.management_mode,
-                    envelope.logical_key,
-                    envelope.correlation_id,
-                    envelope.session_id,
-                    envelope.tool_call_id,
-                    envelope.error_fingerprint,
-                    envelope.summary,
-                    envelope.content_excerpt,
-                    envelope.cwd,
-                    envelope.repo,
-                    envelope.project,
-                    envelope.transcript_path,
-                    json.dumps(envelope.raw_payload, ensure_ascii=False),
-                    json.dumps(envelope.redacted_payload, ensure_ascii=False),
-                ),
-            )
-            version, status, queued = _merge_envelope(conn, envelope)
+            version, status, queued = _append_envelope(conn, envelope)
             return DispatchResult(
                 event_id=envelope.event_id,
                 logical_key=envelope.logical_key,
@@ -99,10 +66,16 @@ class EventStore:
 
     def mark_sink_succeeded(self, row_id: int, logical_key: str, aggregate_version: int, sink_name: str, receipt: str) -> None:
         with self.transaction() as conn:
-            conn.execute(
-                "UPDATE outbox SET status='applied', last_error=NULL WHERE id=?",
-                (row_id,),
+            updated = conn.execute(
+                """
+                UPDATE outbox
+                SET status='applied', last_error=NULL
+                WHERE id=? AND logical_key=? AND aggregate_version=? AND sink_name=? AND status='claimed'
+                """,
+                (row_id, logical_key, aggregate_version, sink_name),
             )
+            if updated.rowcount == 0:
+                return
             conn.execute(
                 """
                 INSERT OR IGNORE INTO sink_runs(logical_key, aggregate_version, sink_name, receipt, status, created_at)
@@ -182,6 +155,7 @@ class EventStore:
                 SELECT id
                 FROM outbox
                 WHERE status='dead_letter'
+                  AND COALESCE(last_error, '') != 'superseded by newer review_materialization'
                 ORDER BY id
                 LIMIT ?
                 """,
@@ -199,6 +173,159 @@ class EventStore:
                 [(now, row["id"]) for row in rows],
             )
             return len(rows)
+
+    def enqueue_materialization_resolution(
+        self,
+        *,
+        candidate_key: str,
+        review_seq: int,
+        effective_label: str,
+        materialization_key: str,
+        judge_run_key: str,
+        window_id: str,
+        payload: dict[str, Any],
+        promotion_key: str | None = None,
+        project: str | None = None,
+        cwd: str | None = None,
+        repo: str | None = None,
+    ) -> DispatchResult:
+        if effective_label not in _CANDIDATE_LABELS:
+            raise ValueError(f"invalid materialized label: {effective_label}")
+        logical_key = f"materialize:{candidate_key}:{effective_label}"
+        with self.transaction() as conn:
+            existing_record = conn.execute(
+                """
+                SELECT review_seq, status
+                FROM materialization_records
+                WHERE materialization_key=?
+                LIMIT 1
+                """,
+                (materialization_key,),
+            ).fetchone()
+            existing_logical = conn.execute(
+                """
+                SELECT aggregate_version, aggregate_state_json, status
+                FROM logical_events
+                WHERE logical_key=?
+                LIMIT 1
+                """,
+                (logical_key,),
+            ).fetchone()
+            latest_resolution = conn.execute(
+                """
+                SELECT MAX(review_seq) AS max_review_seq
+                FROM materialization_records
+                WHERE candidate_key=? AND effective_label=?
+                """,
+                (candidate_key, effective_label),
+            ).fetchone()
+            latest_resolution_seq = int(latest_resolution["max_review_seq"] or 0)
+            if latest_resolution_seq > review_seq:
+                return DispatchResult(
+                    event_id="",
+                    logical_key=logical_key,
+                    aggregate_type="review_materialization",
+                    status=str(existing_logical["status"]) if existing_logical is not None else "ready",
+                    aggregate_version=int(existing_logical["aggregate_version"]) if existing_logical is not None else 0,
+                    queued_sinks=[],
+                )
+            logical_review_seq = 0
+            if existing_logical is not None:
+                logical_state = json.loads(existing_logical["aggregate_state_json"])
+                logical_review_seq = int(logical_state.get("review_seq") or 0)
+            if logical_review_seq >= review_seq:
+                current_sink_count = 0
+                if existing_logical is not None:
+                    sink_row = conn.execute(
+                        """
+                        SELECT COUNT(DISTINCT sink_name) AS count
+                        FROM outbox
+                        WHERE logical_key=? AND aggregate_version=?
+                          AND sink_name IN (?, ?)
+                        """,
+                        (
+                            logical_key,
+                            int(existing_logical["aggregate_version"]),
+                            _REVIEW_MATERIALIZATION_SINKS[0],
+                            _REVIEW_MATERIALIZATION_SINKS[1],
+                        ),
+                    ).fetchone()
+                    current_sink_count = int(sink_row["count"])
+                if (
+                    existing_record is not None
+                    and existing_record["status"] == "applied"
+                ) or current_sink_count == len(_REVIEW_MATERIALIZATION_SINKS):
+                    return DispatchResult(
+                        event_id="",
+                        logical_key=logical_key,
+                        aggregate_type="review_materialization",
+                        status=str(existing_logical["status"]) if existing_logical is not None else "ready",
+                        aggregate_version=int(existing_logical["aggregate_version"]) if existing_logical is not None else 0,
+                        queued_sinks=[],
+                    )
+            if existing_record is not None and int(existing_record["review_seq"]) >= review_seq:
+                if existing_record["status"] == "applied":
+                    return DispatchResult(
+                        event_id="",
+                        logical_key=logical_key,
+                        aggregate_type="review_materialization",
+                        status="applied",
+                        aggregate_version=int(existing_logical["aggregate_version"]) if existing_logical is not None else 0,
+                        queued_sinks=[],
+                    )
+            self._upsert_materialization_record_conn(
+                conn,
+                materialization_key=materialization_key,
+                candidate_key=candidate_key,
+                review_seq=review_seq,
+                judge_run_key=judge_run_key,
+                window_id=window_id,
+                materialized_label=effective_label,
+                effective_label=effective_label,
+                status="planned",
+                payload=payload,
+                promotion_key=promotion_key,
+            )
+            envelope = EventEnvelope(
+                event_id=generate_ulid(),
+                occurred_at=utc_now_iso(),
+                received_at=utc_now_iso(),
+                source_tool="kb",
+                source_client="kb-mcp",
+                source_layer="recovery_sweeper",
+                event_name="materialization_resolved",
+                aggregate_type="review_materialization",
+                management_mode="unmanaged",
+                logical_key=logical_key,
+                correlation_id=None,
+                session_id=None,
+                summary=f"materialize {effective_label}",
+                content_excerpt=None,
+                cwd=cwd,
+                repo=repo,
+                project=project,
+                transcript_path=None,
+                aggregate_state={
+                    "candidate_key": candidate_key,
+                    "review_seq": review_seq,
+                    "judge_run_key": judge_run_key,
+                    "window_id": window_id,
+                    "effective_label": effective_label,
+                    "materialization_key": materialization_key,
+                    "promotion_key": promotion_key,
+                },
+                raw_payload=dict(payload),
+                redacted_payload=dict(payload),
+            )
+            version, status, queued = _append_envelope(conn, envelope)
+            return DispatchResult(
+                event_id=envelope.event_id,
+                logical_key=envelope.logical_key,
+                aggregate_type=envelope.aggregate_type,
+                status=status,
+                aggregate_version=version,
+                queued_sinks=queued,
+            )
 
     def upsert_judge_run(
         self,
@@ -415,6 +542,226 @@ class EventStore:
                 ),
             )
 
+    def upsert_materialization_record(
+        self,
+        *,
+        materialization_key: str,
+        candidate_key: str,
+        review_seq: int,
+        judge_run_key: str,
+        window_id: str,
+        materialized_label: str,
+        effective_label: str,
+        status: str,
+        payload: dict[str, Any],
+        note_id: str | None = None,
+        note_path: str | None = None,
+        promotion_key: str | None = None,
+        supersedes_materialization_key: str | None = None,
+        last_error: str | None = None,
+        lease_owner: str | None = None,
+        lease_expires_at: str | None = None,
+        lease_epoch: int | None = None,
+    ) -> None:
+        with self.transaction() as conn:
+            self._upsert_materialization_record_conn(
+                conn,
+                materialization_key=materialization_key,
+                candidate_key=candidate_key,
+                review_seq=review_seq,
+                judge_run_key=judge_run_key,
+                window_id=window_id,
+                materialized_label=materialized_label,
+                effective_label=effective_label,
+                status=status,
+                payload=payload,
+                note_id=note_id,
+                note_path=note_path,
+                promotion_key=promotion_key,
+                supersedes_materialization_key=supersedes_materialization_key,
+                last_error=last_error,
+                lease_owner=lease_owner,
+                lease_expires_at=lease_expires_at,
+                lease_epoch=lease_epoch,
+            )
+
+    def get_materialization_record(self, materialization_key: str) -> sqlite3.Row | None:
+        with schema_locked_connection() as conn:
+            return conn.execute(
+                """
+                SELECT *
+                FROM materialization_records
+                WHERE materialization_key=?
+                LIMIT 1
+                """,
+                (materialization_key,),
+            ).fetchone()
+
+    def claim_materialization_record(
+        self,
+        *,
+        materialization_key: str,
+        lease_owner: str,
+        lease_expires_at: str,
+    ) -> sqlite3.Row | None:
+        with self.transaction() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM materialization_records
+                WHERE materialization_key=?
+                  AND status IN ('planned', 'repair_pending', 'applying')
+                  AND (lease_expires_at IS NULL OR lease_expires_at <= ? OR lease_owner=?)
+                LIMIT 1
+                """,
+                (materialization_key, utc_now_iso(), lease_owner),
+            ).fetchone()
+            if row is None:
+                return None
+            next_epoch = int(row["lease_epoch"]) + 1
+            conn.execute(
+                """
+                UPDATE materialization_records
+                SET status='applying', lease_owner=?, lease_expires_at=?, lease_epoch=?, updated_at=?
+                WHERE materialization_key=?
+                """,
+                (lease_owner, lease_expires_at, next_epoch, _store_now_iso(), materialization_key),
+            )
+            return conn.execute(
+                "SELECT * FROM materialization_records WHERE materialization_key=?",
+                (materialization_key,),
+            ).fetchone()
+
+    def heartbeat_materialization_record(
+        self,
+        *,
+        materialization_key: str,
+        lease_owner: str,
+        lease_epoch: int,
+        lease_expires_at: str,
+    ) -> bool:
+        with self.transaction() as conn:
+            result = conn.execute(
+                """
+                UPDATE materialization_records
+                SET lease_expires_at=?, updated_at=?
+                WHERE materialization_key=? AND lease_owner=? AND lease_epoch=?
+                """,
+                (lease_expires_at, _store_now_iso(), materialization_key, lease_owner, lease_epoch),
+            )
+            return result.rowcount > 0
+
+    def release_materialization_record(
+        self,
+        *,
+        materialization_key: str,
+        lease_owner: str,
+        lease_epoch: int,
+        status: str,
+    ) -> bool:
+        if status not in _MATERIALIZATION_STATUSES:
+            raise ValueError(f"invalid materialization status: {status}")
+        with self.transaction() as conn:
+            result = conn.execute(
+                """
+                UPDATE materialization_records
+                SET status=?, lease_owner=NULL, lease_expires_at=NULL, updated_at=?
+                WHERE materialization_key=? AND lease_owner=? AND lease_epoch=?
+                """,
+                (status, _store_now_iso(), materialization_key, lease_owner, lease_epoch),
+            )
+            return result.rowcount > 0
+
+    def _upsert_materialization_record_conn(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        materialization_key: str,
+        candidate_key: str,
+        review_seq: int,
+        judge_run_key: str,
+        window_id: str,
+        materialized_label: str,
+        effective_label: str,
+        status: str,
+        payload: dict[str, Any],
+        note_id: str | None = None,
+        note_path: str | None = None,
+        promotion_key: str | None = None,
+        supersedes_materialization_key: str | None = None,
+        last_error: str | None = None,
+        lease_owner: str | None = None,
+        lease_expires_at: str | None = None,
+        lease_epoch: int | None = None,
+    ) -> None:
+        if materialized_label not in _CANDIDATE_LABELS:
+            raise ValueError(f"invalid materialized label: {materialized_label}")
+        if effective_label not in _CANDIDATE_LABELS:
+            raise ValueError(f"invalid effective label: {effective_label}")
+        if status not in _MATERIALIZATION_STATUSES:
+            raise ValueError(f"invalid materialization status: {status}")
+        now = _store_now_iso()
+        existing = conn.execute(
+            """
+            SELECT lease_epoch
+            FROM materialization_records
+            WHERE materialization_key=?
+            """,
+            (materialization_key,),
+        ).fetchone()
+        epoch = int(existing["lease_epoch"]) if existing is not None else 0
+        if lease_epoch is not None:
+            epoch = lease_epoch
+        conn.execute(
+            """
+            INSERT INTO materialization_records(
+              materialization_key, candidate_key, review_seq, judge_run_key, window_id,
+              materialized_label, effective_label, status, note_id, note_path,
+              promotion_key, supersedes_materialization_key, payload_json, last_error,
+              lease_owner, lease_expires_at, lease_epoch, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(materialization_key) DO UPDATE SET
+              candidate_key=excluded.candidate_key,
+              review_seq=excluded.review_seq,
+              judge_run_key=excluded.judge_run_key,
+              window_id=excluded.window_id,
+              materialized_label=excluded.materialized_label,
+              effective_label=excluded.effective_label,
+              status=excluded.status,
+              note_id=COALESCE(excluded.note_id, materialization_records.note_id),
+              note_path=COALESCE(excluded.note_path, materialization_records.note_path),
+              promotion_key=COALESCE(excluded.promotion_key, materialization_records.promotion_key),
+              supersedes_materialization_key=COALESCE(excluded.supersedes_materialization_key, materialization_records.supersedes_materialization_key),
+              payload_json=excluded.payload_json,
+              last_error=excluded.last_error,
+              lease_owner=excluded.lease_owner,
+              lease_expires_at=excluded.lease_expires_at,
+              lease_epoch=excluded.lease_epoch,
+              updated_at=excluded.updated_at
+            """,
+            (
+                materialization_key,
+                candidate_key,
+                review_seq,
+                judge_run_key,
+                window_id,
+                materialized_label,
+                effective_label,
+                status,
+                note_id,
+                note_path,
+                promotion_key,
+                supersedes_materialization_key,
+                json.dumps(payload, ensure_ascii=False),
+                last_error,
+                lease_owner,
+                lease_expires_at,
+                epoch,
+                now,
+                now,
+            ),
+        )
+
     def mark_candidates_suggested(self, candidate_keys: list[str]) -> int:
         if not candidate_keys:
             return 0
@@ -507,7 +854,12 @@ class EventStore:
                     reviewed_at,
                 ),
             )
-            candidate_status = "accepted" if human_verdict == "accepted" else "rejected"
+            if human_verdict == "accepted":
+                candidate_status = "accepted"
+            elif human_verdict == "relabeled":
+                candidate_status = "relabeled"
+            else:
+                candidate_status = "rejected"
             conn.execute(
                 """
                 UPDATE promotion_candidates
@@ -605,10 +957,12 @@ def _merge_envelope(conn: sqlite3.Connection, envelope: EventEnvelope) -> tuple[
         (envelope.logical_key,),
     ).fetchone()
     state = dict(envelope.aggregate_state)
+    existing_state: dict[str, Any] = {}
     if existing:
-        current_state = json.loads(existing["aggregate_state_json"])
-        current_state.update({k: v for k, v in state.items() if v is not None})
-        state = current_state
+        existing_state = json.loads(existing["aggregate_state_json"])
+        merged_state = dict(existing_state)
+        merged_state.update({k: v for k, v in state.items() if v is not None})
+        state = merged_state
         version = int(existing["aggregate_version"]) + 1
         status = existing["status"]
         debug_only_reason = existing["debug_only_reason"]
@@ -667,6 +1021,22 @@ def _merge_envelope(conn: sqlite3.Connection, envelope: EventEnvelope) -> tuple[
                 queued.extend(["promotion_planner", "promotion_applier"])
         else:
             status = "collecting"
+    elif envelope.aggregate_type == "review_materialization":
+        incoming_review_seq = int(envelope.aggregate_state.get("review_seq") or 0)
+        existing_review_seq = int(existing_state.get("review_seq") or 0) if existing else 0
+        if existing and existing_review_seq > incoming_review_seq:
+            return int(existing["aggregate_version"]), str(existing["status"]), []
+        if existing and incoming_review_seq > existing_review_seq:
+            conn.execute(
+                """
+                UPDATE outbox
+                SET status='dead_letter', last_error='superseded by newer review_materialization'
+                WHERE logical_key=? AND status!='applied'
+                """,
+                (envelope.logical_key,),
+            )
+        status = "ready"
+        queued = ["promotion_planner", "promotion_applier"]
 
     now = utc_now_iso()
     conn.execute(
@@ -725,6 +1095,46 @@ def _merge_envelope(conn: sqlite3.Connection, envelope: EventEnvelope) -> tuple[
             (envelope.logical_key, version, sink_name, now, now),
         )
     return version, status, queued
+
+
+def _append_envelope(conn: sqlite3.Connection, envelope: EventEnvelope) -> tuple[int, str, list[str]]:
+    _assign_checkpoint_identity(conn, envelope)
+    conn.execute(
+        """
+        INSERT INTO events(
+          event_id, occurred_at, received_at, source_tool, source_client,
+          source_layer, event_name, aggregate_type, management_mode, logical_key,
+          correlation_id, session_id, tool_call_id, error_fingerprint, summary,
+          content_excerpt, cwd, repo, project, transcript_path, raw_payload_json,
+          redacted_payload_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            envelope.event_id,
+            envelope.occurred_at,
+            envelope.received_at,
+            envelope.source_tool,
+            envelope.source_client,
+            envelope.source_layer,
+            envelope.event_name,
+            envelope.aggregate_type,
+            envelope.management_mode,
+            envelope.logical_key,
+            envelope.correlation_id,
+            envelope.session_id,
+            envelope.tool_call_id,
+            envelope.error_fingerprint,
+            envelope.summary,
+            envelope.content_excerpt,
+            envelope.cwd,
+            envelope.repo,
+            envelope.project,
+            envelope.transcript_path,
+            json.dumps(envelope.raw_payload, ensure_ascii=False),
+            json.dumps(envelope.redacted_payload, ensure_ascii=False),
+        ),
+    )
+    return _merge_envelope(conn, envelope)
 
 
 def _is_anchor_save(envelope: EventEnvelope) -> bool:
