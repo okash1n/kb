@@ -267,6 +267,7 @@ class EventStore:
                         SELECT COUNT(DISTINCT sink_name) AS count
                         FROM outbox
                         WHERE logical_key=? AND aggregate_version=?
+                          AND status!='dead_letter'
                           AND sink_name IN (?, ?)
                         """,
                         (
@@ -280,7 +281,14 @@ class EventStore:
                 if (
                     existing_record is not None
                     and existing_record["status"] == "applied"
-                ) or current_sink_count == len(_REVIEW_MATERIALIZATION_SINKS):
+                ) or (
+                    existing_record is not None
+                    and existing_record["status"] in {"planned", "applying"}
+                    and current_sink_count == len(_REVIEW_MATERIALIZATION_SINKS)
+                ) or (
+                    existing_record is None
+                    and current_sink_count == len(_REVIEW_MATERIALIZATION_SINKS)
+                ):
                     return DispatchResult(
                         event_id="",
                         logical_key=logical_key,
@@ -886,6 +894,220 @@ class EventStore:
                 (candidate_key,),
             ).fetchone()
 
+    def resolve_candidate_materialization(self, candidate_key: str) -> dict[str, Any]:
+        candidate = self.get_promotion_candidate(candidate_key)
+        if candidate is None or str(candidate["status"]) not in {"accepted", "relabeled"}:
+            raise ValueError(f"candidate is not materializable: {candidate_key}")
+        review = self.latest_candidate_review(candidate_key)
+        if review is None:
+            raise ValueError(f"latest candidate review not found: {candidate_key}")
+        effective_label = (
+            str(review["human_label"])
+            if review["human_verdict"] == "relabeled"
+            else str(candidate["label"])
+        )
+        resolution = self._materialization_resolution(
+            candidate_key=candidate_key,
+            review_seq=int(review["review_seq"]),
+            effective_label=effective_label,
+            materialization_key=None,
+        )
+        existing = self.get_materialization_record_for_resolution(
+            candidate_key=candidate_key,
+            review_seq=resolution["review_seq"],
+            effective_label=str(resolution["effective_label"]),
+        )
+        if existing is not None and str(existing["status"]) == "applied":
+            return {**resolution, "result": "already_applied"}
+        dispatch = self.enqueue_materialization_resolution(**resolution)
+        return {**resolution, "result": "enqueued", "dispatch": dispatch}
+
+    def materializable_candidates(
+        self,
+        *,
+        candidate_key: str | None = None,
+        limit: int | None = 50,
+    ) -> list[sqlite3.Row]:
+        with schema_locked_connection() as conn:
+            sql = """
+                SELECT *
+                FROM promotion_candidates
+                WHERE status IN ('accepted', 'relabeled')
+            """
+            params: list[Any] = []
+            if candidate_key is not None:
+                sql += "\n  AND candidate_key=?"
+                params.append(candidate_key)
+            sql += "\nORDER BY resolved_at, created_at, candidate_key"
+            if limit is not None:
+                sql += "\nLIMIT ?"
+                params.append(limit)
+            return conn.execute(sql, tuple(params)).fetchall()
+
+    def get_materialization_record_for_resolution(
+        self,
+        *,
+        candidate_key: str,
+        review_seq: int,
+        effective_label: str,
+    ) -> sqlite3.Row | None:
+        with schema_locked_connection() as conn:
+            return conn.execute(
+                """
+                SELECT *
+                FROM materialization_records
+                WHERE candidate_key=? AND review_seq=? AND effective_label=?
+                LIMIT 1
+                """,
+                (candidate_key, review_seq, effective_label),
+            ).fetchone()
+
+    def latest_materialization_review_seq(self, *, candidate_key: str, effective_label: str) -> int:
+        with schema_locked_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT MAX(review_seq) AS max_review_seq
+                FROM materialization_records
+                WHERE candidate_key=? AND effective_label=?
+                """,
+                (candidate_key, effective_label),
+            ).fetchone()
+            return int(row["max_review_seq"] or 0)
+
+    def retryable_materialization_records(self, *, limit: int = 50) -> list[sqlite3.Row]:
+        with schema_locked_connection() as conn:
+            return conn.execute(
+                """
+                SELECT *
+                FROM materialization_records
+                WHERE status='repair_pending'
+                   OR status='failed'
+                   OR (status='applying' AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?)
+                ORDER BY updated_at, created_at, materialization_key
+                LIMIT ?
+                """,
+                (utc_now_iso(), limit),
+            ).fetchall()
+
+    def claim_retryable_materialization(
+        self,
+        *,
+        materialization_key: str,
+        lease_owner: str,
+        lease_expires_at: str,
+    ) -> sqlite3.Row | None:
+        with self.transaction() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM materialization_records
+                WHERE materialization_key=?
+                LIMIT 1
+                """,
+                (materialization_key,),
+            ).fetchone()
+            if row is None:
+                return None
+            status = str(row["status"])
+            now = utc_now_iso()
+            retryable = (
+                status == "repair_pending"
+                or status == "failed"
+                or (status == "applying" and row["lease_expires_at"] and str(row["lease_expires_at"]) <= now)
+            )
+            if not retryable:
+                return None
+            if row["lease_expires_at"] and str(row["lease_expires_at"]) > now and row["lease_owner"] not in {None, lease_owner}:
+                return None
+            next_epoch = int(row["lease_epoch"]) + 1
+            updated = conn.execute(
+                """
+                UPDATE materialization_records
+                SET status='repair_pending',
+                    lease_owner=?,
+                    lease_expires_at=?,
+                    lease_epoch=?,
+                    updated_at=?
+                WHERE materialization_key=?
+                  AND (
+                    lease_expires_at IS NULL
+                    OR lease_expires_at <= ?
+                    OR lease_owner=?
+                  )
+                """,
+                (
+                    lease_owner,
+                    lease_expires_at,
+                    next_epoch,
+                    _store_now_iso(),
+                    materialization_key,
+                    now,
+                    lease_owner,
+                ),
+            )
+            if updated.rowcount == 0:
+                return None
+            return conn.execute(
+                "SELECT * FROM materialization_records WHERE materialization_key=?",
+                (materialization_key,),
+            ).fetchone()
+
+    def retry_materialization(
+        self,
+        *,
+        materialization_key: str,
+        lease_owner: str,
+        lease_expires_at: str,
+    ) -> dict[str, Any] | None:
+        claimed = self.claim_retryable_materialization(
+            materialization_key=materialization_key,
+            lease_owner=lease_owner,
+            lease_expires_at=lease_expires_at,
+        )
+        if claimed is None:
+            return None
+        try:
+            latest_review_seq = self.latest_materialization_review_seq(
+                candidate_key=str(claimed["candidate_key"]),
+                effective_label=str(claimed["effective_label"]),
+            )
+            resolution = self._materialization_resolution(
+                candidate_key=str(claimed["candidate_key"]),
+                review_seq=int(claimed["review_seq"]),
+                effective_label=str(claimed["effective_label"]),
+                materialization_key=str(claimed["materialization_key"]),
+            )
+            dispatch = self.enqueue_materialization_resolution(**resolution)
+            self.release_materialization_record(
+                materialization_key=materialization_key,
+                lease_owner=lease_owner,
+                lease_epoch=int(claimed["lease_epoch"]),
+                status="superseded" if latest_review_seq > int(claimed["review_seq"]) else "planned",
+            )
+            return {
+                **resolution,
+                "status": dispatch.status,
+                "aggregate_version": dispatch.aggregate_version,
+                "queued_sinks": dispatch.queued_sinks,
+            }
+        except Exception as exc:
+            self.release_materialization_record(
+                materialization_key=materialization_key,
+                lease_owner=lease_owner,
+                lease_epoch=int(claimed["lease_epoch"]),
+                status="failed",
+            )
+            with self.transaction() as conn:
+                conn.execute(
+                    """
+                    UPDATE materialization_records
+                    SET last_error=?, updated_at=?
+                    WHERE materialization_key=?
+                    """,
+                    (str(exc)[:500], _store_now_iso(), materialization_key),
+                )
+            raise
+
     def get_candidate_review(self, candidate_key: str, review_seq: int) -> sqlite3.Row | None:
         with self.transaction() as conn:
             return conn.execute(
@@ -1222,6 +1444,42 @@ class EventStore:
                 conn.rollback()
                 raise
 
+    def _materialization_resolution(
+        self,
+        *,
+        candidate_key: str,
+        review_seq: int,
+        effective_label: str,
+        materialization_key: str | None,
+    ) -> dict[str, Any]:
+        candidate = self.get_promotion_candidate(candidate_key)
+        if candidate is None:
+            raise ValueError(f"candidate not found: {candidate_key}")
+        candidate_payload = json.loads(str(candidate["payload_json"]))
+        window = dict(candidate_payload.get("window") or {})
+        existing = self.get_materialization_record_for_resolution(
+            candidate_key=candidate_key,
+            review_seq=review_seq,
+            effective_label=effective_label,
+        )
+        resolved_materialization_key = materialization_key
+        if existing is not None and not resolved_materialization_key:
+            resolved_materialization_key = str(existing["materialization_key"])
+        if not resolved_materialization_key:
+            resolved_materialization_key = f"materialize:{candidate_key}:{review_seq}:{effective_label}"
+        return {
+            "candidate_key": candidate_key,
+            "review_seq": review_seq,
+            "effective_label": effective_label,
+            "materialization_key": resolved_materialization_key,
+            "judge_run_key": str(candidate["judge_run_key"]),
+            "window_id": str(candidate["window_id"]),
+            "payload": {"candidate_key": candidate_key, "review_seq": review_seq},
+            "project": _window_value(window, "project"),
+            "cwd": _window_value(window, "cwd"),
+            "repo": _window_value(window, "repo"),
+        }
+
 
 def _merge_envelope(conn: sqlite3.Connection, envelope: EventEnvelope) -> tuple[int, str, list[str]]:
     existing = conn.execute(
@@ -1483,3 +1741,14 @@ def _promote_pending_sessions(conn: sqlite3.Connection) -> None:
             """,
             (row["logical_key"], row["aggregate_version"], now, now),
         )
+
+
+def _window_value(window: dict[str, Any], key: str) -> str | None:
+    checkpoints = list(window.get("checkpoints") or [])
+    for checkpoint in reversed(checkpoints):
+        if not isinstance(checkpoint, dict):
+            continue
+        value = checkpoint.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
