@@ -16,8 +16,9 @@ from kb_mcp.config import load_config
 from kb_mcp.events.candidates import detect_candidates
 from kb_mcp.events.middleware import with_tool_events
 from kb_mcp.events.normalize import normalize_event
-from kb_mcp.events.schema import db_path, schema_locked_connection
+from kb_mcp.events.schema import db_path, ensure_schema, schema_locked_connection
 from kb_mcp.events.store import EventStore
+from kb_mcp.events.types import EventEnvelope, utc_now_iso
 from kb_mcp.events.worker import run_once
 from kb_mcp.note import parse_frontmatter
 
@@ -548,6 +549,107 @@ class EventPipelineTest(unittest.TestCase):
         self.assertIn("materialization_records", tables)
         self.assertIn("note_mutations", tables)
 
+    def test_schema_upgrade_refreshes_candidate_status_check_for_relabeled(self) -> None:
+        root = Path(self.tmpdir.name)
+        db_file = root / "events-v4-old.sqlite3"
+        raw = sqlite3.connect(db_file)
+        try:
+            raw.execute(
+                """
+                CREATE TABLE schema_meta (
+                  key TEXT PRIMARY KEY,
+                  value TEXT NOT NULL
+                )
+                """
+            )
+            raw.execute(
+                """
+                CREATE TABLE judge_runs (
+                  judge_run_key TEXT PRIMARY KEY,
+                  partition_key TEXT NOT NULL,
+                  window_id TEXT NOT NULL,
+                  start_ordinal INTEGER NOT NULL,
+                  end_ordinal INTEGER NOT NULL,
+                  window_index INTEGER NOT NULL,
+                  status TEXT NOT NULL,
+                  labels_json TEXT NOT NULL,
+                  decision_json TEXT NOT NULL,
+                  prompt_version TEXT NOT NULL,
+                  model_hint TEXT,
+                  supersedes_judge_run_key TEXT,
+                  lease_owner TEXT,
+                  lease_expires_at TEXT,
+                  created_at TEXT NOT NULL,
+                  updated_at TEXT NOT NULL
+                )
+                """
+            )
+            raw.execute(
+                """
+                CREATE TABLE promotion_candidates (
+                  candidate_key TEXT PRIMARY KEY,
+                  window_id TEXT NOT NULL,
+                  judge_run_key TEXT NOT NULL REFERENCES judge_runs(judge_run_key),
+                  label TEXT NOT NULL CHECK (label IN ('adr', 'gap', 'knowledge', 'session_thin')),
+                  status TEXT NOT NULL CHECK (status IN ('pending_review', 'accepted', 'rejected', 'materialized')),
+                  score REAL,
+                  slice_fingerprint TEXT,
+                  reasons_json TEXT NOT NULL,
+                  payload_json TEXT NOT NULL,
+                  last_suggested_at TEXT,
+                  suggestion_seq INTEGER NOT NULL DEFAULT 0,
+                  resolved_at TEXT,
+                  created_at TEXT NOT NULL,
+                  updated_at TEXT NOT NULL
+                )
+                """
+            )
+            raw.execute(
+                """
+                INSERT INTO judge_runs(
+                  judge_run_key, partition_key, window_id, start_ordinal, end_ordinal, window_index,
+                  status, labels_json, decision_json, prompt_version, model_hint, supersedes_judge_run_key,
+                  lease_owner, lease_expires_at, created_at, updated_at
+                ) VALUES (
+                  'judge-old', 'partition-old', 'window-old', 1, 2, 1,
+                  'judged', '[]', '{}', 'v1', NULL, NULL,
+                  NULL, NULL, '2026-03-25T00:00:00+00:00', '2026-03-25T00:00:00+00:00'
+                )
+                """
+            )
+            raw.execute(
+                """
+                INSERT INTO promotion_candidates(
+                  candidate_key, window_id, judge_run_key, label, status, score, slice_fingerprint,
+                  reasons_json, payload_json, last_suggested_at, suggestion_seq, resolved_at, created_at, updated_at
+                ) VALUES (
+                  'cand-old', 'window-old', 'judge-old', 'gap', 'accepted', 0.9, 'fp',
+                  '[]', '{}', NULL, 0, NULL, '2026-03-25T00:00:00+00:00', '2026-03-25T00:00:00+00:00'
+                )
+                """
+            )
+            raw.commit()
+        finally:
+            raw.close()
+
+        migrated = sqlite3.connect(db_file)
+        migrated.row_factory = sqlite3.Row
+        try:
+            ensure_schema(migrated)
+            migrated.execute(
+                """
+                UPDATE promotion_candidates
+                SET status='relabeled'
+                WHERE candidate_key='cand-old'
+                """
+            )
+            row = migrated.execute(
+                "SELECT status FROM promotion_candidates WHERE candidate_key='cand-old'"
+            ).fetchone()
+        finally:
+            migrated.close()
+        self.assertEqual(row["status"], "relabeled")
+
     def test_enqueue_materialization_resolution_creates_logical_event_and_outbox(self) -> None:
         store = EventStore()
         store.upsert_judge_run(
@@ -981,6 +1083,152 @@ class EventPipelineTest(unittest.TestCase):
         self.assertEqual(superseded["count"], 2)
         self.assertEqual(replayed, 0)
 
+    def test_enqueue_materialization_resolution_recovers_missing_current_outbox_even_if_older_version_exists(self) -> None:
+        store = EventStore()
+        store.upsert_judge_run(
+            judge_run_key="judge-materialize-7",
+            partition_key="partition-7",
+            window_id="window-materialize-7",
+            start_ordinal=1,
+            end_ordinal=2,
+            window_index=1,
+            status="judged",
+            prompt_version="v1",
+        )
+        store.upsert_promotion_candidate(
+            candidate_key="cand-materialize-7",
+            window_id="window-materialize-7",
+            judge_run_key="judge-materialize-7",
+            label="knowledge",
+            status="accepted",
+            score=0.93,
+            slice_fingerprint="window-materialize-7",
+            reasons=["confirmed_fact"],
+            payload={"window_id": "window-materialize-7"},
+        )
+        store.enqueue_materialization_resolution(
+            candidate_key="cand-materialize-7",
+            review_seq=1,
+            effective_label="knowledge",
+            materialization_key="mat-7-v1",
+            judge_run_key="judge-materialize-7",
+            window_id="window-materialize-7",
+            payload={"candidate_key": "cand-materialize-7", "review_seq": 1},
+        )
+        store.enqueue_materialization_resolution(
+            candidate_key="cand-materialize-7",
+            review_seq=2,
+            effective_label="knowledge",
+            materialization_key="mat-7-v2",
+            judge_run_key="judge-materialize-7",
+            window_id="window-materialize-7",
+            payload={"candidate_key": "cand-materialize-7", "review_seq": 2},
+        )
+        with store.transaction() as conn:
+            conn.execute(
+                """
+                DELETE FROM outbox
+                WHERE logical_key='materialize:cand-materialize-7:knowledge'
+                  AND aggregate_version=2
+                """
+            )
+
+        result = store.enqueue_materialization_resolution(
+            candidate_key="cand-materialize-7",
+            review_seq=2,
+            effective_label="knowledge",
+            materialization_key="mat-7-v2",
+            judge_run_key="judge-materialize-7",
+            window_id="window-materialize-7",
+            payload={"candidate_key": "cand-materialize-7", "review_seq": 2},
+        )
+
+        self.assertGreater(result.aggregate_version, 2)
+        with store.transaction() as conn:
+            outbox_versions = conn.execute(
+                """
+                SELECT aggregate_version, status
+                FROM outbox
+                WHERE logical_key='materialize:cand-materialize-7:knowledge'
+                ORDER BY aggregate_version
+                """
+            ).fetchall()
+        self.assertEqual(
+            [(row["aggregate_version"], row["status"]) for row in outbox_versions],
+            [(1, "dead_letter"), (1, "dead_letter"), (3, "ready"), (3, "ready")],
+        )
+
+    def test_enqueue_materialization_resolution_recovers_partial_current_outbox_loss(self) -> None:
+        store = EventStore()
+        store.upsert_judge_run(
+            judge_run_key="judge-materialize-8",
+            partition_key="partition-8",
+            window_id="window-materialize-8",
+            start_ordinal=1,
+            end_ordinal=2,
+            window_index=1,
+            status="judged",
+            prompt_version="v1",
+        )
+        store.upsert_promotion_candidate(
+            candidate_key="cand-materialize-8",
+            window_id="window-materialize-8",
+            judge_run_key="judge-materialize-8",
+            label="gap",
+            status="accepted",
+            score=0.95,
+            slice_fingerprint="window-materialize-8",
+            reasons=["user_correction"],
+            payload={"window_id": "window-materialize-8"},
+        )
+        store.enqueue_materialization_resolution(
+            candidate_key="cand-materialize-8",
+            review_seq=1,
+            effective_label="gap",
+            materialization_key="mat-8-v1",
+            judge_run_key="judge-materialize-8",
+            window_id="window-materialize-8",
+            payload={"candidate_key": "cand-materialize-8", "review_seq": 1},
+        )
+        with store.transaction() as conn:
+            conn.execute(
+                """
+                DELETE FROM outbox
+                WHERE logical_key='materialize:cand-materialize-8:gap'
+                  AND aggregate_version=1
+                  AND sink_name='promotion_applier'
+                """
+            )
+
+        result = store.enqueue_materialization_resolution(
+            candidate_key="cand-materialize-8",
+            review_seq=1,
+            effective_label="gap",
+            materialization_key="mat-8-v1",
+            judge_run_key="judge-materialize-8",
+            window_id="window-materialize-8",
+            payload={"candidate_key": "cand-materialize-8", "review_seq": 1},
+        )
+
+        self.assertEqual(result.aggregate_version, 2)
+        with store.transaction() as conn:
+            rows = conn.execute(
+                """
+                SELECT aggregate_version, sink_name, status
+                FROM outbox
+                WHERE logical_key='materialize:cand-materialize-8:gap'
+                ORDER BY aggregate_version, sink_name
+                """
+            ).fetchall()
+        self.assertEqual(
+            [(row["aggregate_version"], row["sink_name"], row["status"]) for row in rows],
+            [
+                (1, "promotion_planner", "ready"),
+                (2, "promotion_applier", "ready"),
+                (2, "promotion_planner", "ready"),
+            ],
+        )
+
     def test_claim_materialization_record_reclaims_with_incremented_epoch(self) -> None:
         store = EventStore()
         store.upsert_judge_run(
@@ -1068,6 +1316,62 @@ class EventPipelineTest(unittest.TestCase):
                 status="applied",
             )
         )
+
+    def test_mark_sink_succeeded_ignores_stale_dead_lettered_row(self) -> None:
+        store = EventStore()
+        store.append(
+            EventEnvelope(
+                event_id="evt-stale-sink-1",
+                occurred_at=utc_now_iso(),
+                received_at=utc_now_iso(),
+                source_tool="kb",
+                source_client="kb-mcp",
+                source_layer="recovery_sweeper",
+                event_name="materialization_resolved",
+                aggregate_type="review_materialization",
+                management_mode="managed",
+                logical_key="materialize:cand-stale:gap",
+                correlation_id="corr-stale",
+                session_id=None,
+                tool_call_id=None,
+                error_fingerprint=None,
+                summary="stale sink test",
+                content_excerpt=None,
+                cwd="/tmp/project",
+                repo="github.com/example/project",
+                project="kb",
+                transcript_path=None,
+                aggregate_state={"review_seq": 1},
+                raw_payload={},
+                redacted_payload={},
+            )
+        )
+        row = store.ready_sinks(limit=1)[0]
+        store.mark_sink_failed(row["id"], "superseded by newer review_materialization")
+
+        store.mark_sink_succeeded(
+            row_id=row["id"],
+            logical_key=row["logical_key"],
+            aggregate_version=row["aggregate_version"],
+            sink_name=row["sink_name"],
+            receipt="late-success",
+        )
+
+        with store.transaction() as conn:
+            outbox = conn.execute(
+                "SELECT status FROM outbox WHERE id=?",
+                (row["id"],),
+            ).fetchone()
+            sink_run = conn.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM sink_runs
+                WHERE logical_key=? AND aggregate_version=? AND sink_name=?
+                """,
+                (row["logical_key"], row["aggregate_version"], row["sink_name"]),
+            ).fetchone()
+        self.assertEqual(outbox["status"], "dead_letter")
+        self.assertEqual(sink_run["count"], 0)
 
     def test_upsert_and_claim_judge_run(self) -> None:
         store = EventStore()

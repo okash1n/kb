@@ -14,10 +14,11 @@ from kb_mcp.events.types import DispatchResult, EventEnvelope, utc_now_iso
 from kb_mcp.note import generate_ulid
 
 _CANDIDATE_LABELS = {"adr", "gap", "knowledge", "session_thin"}
-_CANDIDATE_STATUSES = {"pending_review", "accepted", "rejected", "materialized"}
+_CANDIDATE_STATUSES = {"pending_review", "accepted", "rejected", "relabeled", "materialized"}
 _JUDGE_STATUSES = {"ready", "judged", "superseded", "failed"}
 _HUMAN_VERDICTS = {"accepted", "rejected", "relabeled"}
 _MATERIALIZATION_STATUSES = {"planned", "applying", "applied", "repair_pending", "failed", "superseded"}
+_REVIEW_MATERIALIZATION_SINKS = ("promotion_planner", "promotion_applier")
 
 
 def _store_now_iso() -> str:
@@ -65,10 +66,16 @@ class EventStore:
 
     def mark_sink_succeeded(self, row_id: int, logical_key: str, aggregate_version: int, sink_name: str, receipt: str) -> None:
         with self.transaction() as conn:
-            conn.execute(
-                "UPDATE outbox SET status='applied', last_error=NULL WHERE id=?",
-                (row_id,),
+            updated = conn.execute(
+                """
+                UPDATE outbox
+                SET status='applied', last_error=NULL
+                WHERE id=? AND logical_key=? AND aggregate_version=? AND sink_name=? AND status='claimed'
+                """,
+                (row_id, logical_key, aggregate_version, sink_name),
             )
+            if updated.rowcount == 0:
+                return
             conn.execute(
                 """
                 INSERT OR IGNORE INTO sink_runs(logical_key, aggregate_version, sink_name, receipt, status, created_at)
@@ -227,17 +234,27 @@ class EventStore:
                 logical_state = json.loads(existing_logical["aggregate_state_json"])
                 logical_review_seq = int(logical_state.get("review_seq") or 0)
             if logical_review_seq >= review_seq:
-                outbox_count = 0
+                current_sink_count = 0
                 if existing_logical is not None:
-                    outbox_row = conn.execute(
-                        "SELECT COUNT(*) AS count FROM outbox WHERE logical_key=?",
-                        (logical_key,),
+                    sink_row = conn.execute(
+                        """
+                        SELECT COUNT(DISTINCT sink_name) AS count
+                        FROM outbox
+                        WHERE logical_key=? AND aggregate_version=?
+                          AND sink_name IN (?, ?)
+                        """,
+                        (
+                            logical_key,
+                            int(existing_logical["aggregate_version"]),
+                            _REVIEW_MATERIALIZATION_SINKS[0],
+                            _REVIEW_MATERIALIZATION_SINKS[1],
+                        ),
                     ).fetchone()
-                    outbox_count = int(outbox_row["count"])
+                    current_sink_count = int(sink_row["count"])
                 if (
                     existing_record is not None
                     and existing_record["status"] == "applied"
-                ) or outbox_count > 0:
+                ) or current_sink_count == len(_REVIEW_MATERIALIZATION_SINKS):
                     return DispatchResult(
                         event_id="",
                         logical_key=logical_key,
@@ -837,7 +854,12 @@ class EventStore:
                     reviewed_at,
                 ),
             )
-            candidate_status = "accepted" if human_verdict == "accepted" else "rejected"
+            if human_verdict == "accepted":
+                candidate_status = "accepted"
+            elif human_verdict == "relabeled":
+                candidate_status = "relabeled"
+            else:
+                candidate_status = "rejected"
             conn.execute(
                 """
                 UPDATE promotion_candidates

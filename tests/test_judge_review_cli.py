@@ -125,14 +125,14 @@ class JudgeReviewCliTest(unittest.TestCase):
         self.assertEqual(review["human_verdict"], "rejected")
         self.assertIsNone(review["human_label"])
 
-    def test_judge_relabel_records_review_and_marks_candidate_rejected(self) -> None:
+    def test_judge_relabel_records_review_and_marks_candidate_relabeled(self) -> None:
         candidate_key = self._seed_candidate()
 
         result = self._run_cli("judge", "relabel", candidate_key, "--label", "knowledge")
 
         self.assertEqual(result["human_verdict"], "relabeled")
         self.assertEqual(result["human_label"], "knowledge")
-        self.assertEqual(result["status"], "rejected")
+        self.assertEqual(result["status"], "relabeled")
         with schema_locked_connection() as conn:
             review = conn.execute(
                 """

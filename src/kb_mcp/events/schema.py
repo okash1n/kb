@@ -10,6 +10,25 @@ from kb_mcp.config import runtime_events_db_path, runtime_events_dir
 
 SCHEMA_VERSION = 4
 
+_PROMOTION_CANDIDATES_TABLE_SQL = """
+    CREATE TABLE IF NOT EXISTS promotion_candidates (
+      candidate_key TEXT PRIMARY KEY,
+      window_id TEXT NOT NULL,
+      judge_run_key TEXT NOT NULL REFERENCES judge_runs(judge_run_key),
+      label TEXT NOT NULL CHECK (label IN ('adr', 'gap', 'knowledge', 'session_thin')),
+      status TEXT NOT NULL CHECK (status IN ('pending_review', 'accepted', 'rejected', 'relabeled', 'materialized')),
+      score REAL,
+      slice_fingerprint TEXT,
+      reasons_json TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      last_suggested_at TEXT,
+      suggestion_seq INTEGER NOT NULL DEFAULT 0,
+      resolved_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+"""
+
 DDL = [
     """
     CREATE TABLE IF NOT EXISTS schema_meta (
@@ -130,24 +149,7 @@ DDL = [
       UNIQUE(window_id, prompt_version)
     )
     """,
-    """
-    CREATE TABLE IF NOT EXISTS promotion_candidates (
-      candidate_key TEXT PRIMARY KEY,
-      window_id TEXT NOT NULL,
-      judge_run_key TEXT NOT NULL REFERENCES judge_runs(judge_run_key),
-      label TEXT NOT NULL CHECK (label IN ('adr', 'gap', 'knowledge', 'session_thin')),
-      status TEXT NOT NULL CHECK (status IN ('pending_review', 'accepted', 'rejected', 'materialized')),
-      score REAL,
-      slice_fingerprint TEXT,
-      reasons_json TEXT NOT NULL,
-      payload_json TEXT NOT NULL,
-      last_suggested_at TEXT,
-      suggestion_seq INTEGER NOT NULL DEFAULT 0,
-      resolved_at TEXT,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    )
-    """,
+    _PROMOTION_CANDIDATES_TABLE_SQL,
     """
     CREATE TABLE IF NOT EXISTS candidate_reviews (
       review_id TEXT PRIMARY KEY,
@@ -221,6 +223,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     """Create or upgrade schema."""
     for ddl in DDL:
         conn.execute(ddl)
+    _ensure_relabeled_candidate_status(conn)
     conn.execute(
         "INSERT INTO schema_meta(key, value) VALUES('schema_version', ?) "
         "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -243,3 +246,49 @@ def schema_locked_connection() -> sqlite3.Connection:
 def db_path() -> Path:
     """Return database path for diagnostics."""
     return runtime_events_db_path()
+
+
+def _ensure_relabeled_candidate_status(conn: sqlite3.Connection) -> None:
+    row = conn.execute(
+        """
+        SELECT sql
+        FROM sqlite_master
+        WHERE type='table' AND name='promotion_candidates'
+        """
+    ).fetchone()
+    table_sql = str(row["sql"] or "") if row is not None else ""
+    if "'relabeled'" in table_sql:
+        return
+    conn.execute("PRAGMA foreign_keys=OFF")
+    try:
+        conn.execute(_PROMOTION_CANDIDATES_TABLE_SQL.replace("IF NOT EXISTS ", ""))
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO promotion_candidates(
+              candidate_key, window_id, judge_run_key, label, status, score, slice_fingerprint,
+              reasons_json, payload_json, last_suggested_at, suggestion_seq, resolved_at, created_at, updated_at
+            )
+            SELECT
+              candidate_key, window_id, judge_run_key, label, status, score, slice_fingerprint,
+              reasons_json, payload_json, last_suggested_at, suggestion_seq, resolved_at, created_at, updated_at
+            FROM promotion_candidates_old
+            """
+        )
+    except sqlite3.OperationalError:
+        conn.execute("ALTER TABLE promotion_candidates RENAME TO promotion_candidates_old")
+        conn.execute(_PROMOTION_CANDIDATES_TABLE_SQL)
+        conn.execute(
+            """
+            INSERT INTO promotion_candidates(
+              candidate_key, window_id, judge_run_key, label, status, score, slice_fingerprint,
+              reasons_json, payload_json, last_suggested_at, suggestion_seq, resolved_at, created_at, updated_at
+            )
+            SELECT
+              candidate_key, window_id, judge_run_key, label, status, score, slice_fingerprint,
+              reasons_json, payload_json, last_suggested_at, suggestion_seq, resolved_at, created_at, updated_at
+            FROM promotion_candidates_old
+            """
+        )
+        conn.execute("DROP TABLE promotion_candidates_old")
+    finally:
+        conn.execute("PRAGMA foreign_keys=ON")
