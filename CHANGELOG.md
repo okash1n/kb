@@ -7,6 +7,8 @@
 
 ## [Unreleased]
 
+## [0.17.2] - 2026-03-26
+
 ### Fixed
 
 - `kb_adr` / `kb_gap` / `kb_knowledge` / `kb_draft` の `slug` を任意化し、未指定時は `summary` から自動補完するようにして、クライアントから見た required 条件と保存実装の挙動を一致させた
