@@ -179,6 +179,7 @@ memory promotion の考え方:
 - 全 hook はまず checkpoint として保存する
 - `gap` / `knowledge` / `adr` が anchor になった時だけ rich `session-log` を昇格する
 - `final_hint` 付き checkpoint は thin `session-log` の区切り候補に使う
+- anchor なしの checkpoint が 5 件ずつ 3 window 続いた場合も、thin `session-log` 候補を出せるようにしている
 
 judge / review の流れ:
 1. `kb-mcp judge review-candidates` で checkpoint window を再読して候補を作る
@@ -210,7 +211,7 @@ release 前の最小確認:
 uv run python -m unittest tests.test_judge_cli tests.test_judge_review_cli tests.test_materialize_cli tests.test_fastpath_judge tests.test_install_and_doctor tests.test_event_pipeline tests.test_judge_inputs tests.test_cli_version -v
 python -m compileall src tests
 uv build
-kb-mcp doctor --no-version-check
+kb-mcp doctor
 ```
 
 ## ファイル命名

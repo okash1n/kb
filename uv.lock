@@ -266,7 +266,7 @@ wheels = [
 
 [[package]]
 name = "kb-mcp"
-version = "0.17.5"
+version = "0.18.0"
 source = { editable = "." }
 dependencies = [
     { name = "mcp", extra = ["cli"] },

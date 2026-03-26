@@ -7,6 +7,19 @@
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-03-26
+
+### Fixed
+
+- thin `session-log` 候補の window 上限を 10 checkpoint から 5 checkpoint に下げ、anchor なし会話でも 15 checkpoint で `session_thin` 候補が出るようにした
+- `session_thin` の judge 回帰テストを 5 checkpoint window 前提に更新し、carry chain terminal 条件が実運用の会話粒度から外れにくいようにした
+- README の release 前確認から削除済み `kb-mcp doctor --no-version-check` を取り除いた
+
+### Changed
+
+- memory promotion の説明に、anchor なし 3 window で thin `session-log` 候補を出す条件を追記した
+- `0.18.0` リリースに向けて minor version を更新した
+
 ## [0.17.5] - 2026-03-26
 
 ### Fixed
