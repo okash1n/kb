@@ -5,6 +5,7 @@ from typing import Callable
 
 from kb_mcp.config import inbox_dir, kb_data_root, projects_dir, safe_resolve
 from kb_mcp.events.request_context import REQUEST_CONTEXT
+from kb_mcp.input_normalization import normalize_string_list
 from kb_mcp.vault_git import vault_git_sync
 from kb_mcp.note import (
     build_filename,
@@ -47,14 +48,14 @@ def _write_note(
     *,
     project: str,
     subdir: str,
-    slug: str,
+    slug: str | None,
     summary: str,
     content: str,
     ai_tool: str,
     ai_client: str | None = None,
     repo: str | None = None,
-    tags: list[str] | None = None,
-    related: list[str] | None = None,
+    tags: list[str] | str | None = None,
+    related: list[str] | str | None = None,
     status: str | None = None,
     extra_fields: dict[str, str] | None = None,
     fixed_ulid: str | None = None,
@@ -63,7 +64,10 @@ def _write_note(
     """Write a note file and return confirmation."""
     d = _ensure_project_dir(project, subdir)
     ulid = fixed_ulid or generate_ulid()
-    filename = fixed_filename or build_filename(slug=slugify(slug), ulid=ulid)
+    normalized_tags = normalize_string_list(tags)
+    normalized_related = normalize_string_list(related)
+    effective_slug = slug or summary
+    filename = fixed_filename or build_filename(slug=slugify(effective_slug), ulid=ulid)
     context = REQUEST_CONTEXT.get()
     note_extra_fields = dict(extra_fields or {})
     if context and context.get("save_request_id"):
@@ -74,8 +78,8 @@ def _write_note(
         ai_tool=ai_tool,
         ai_client=ai_client,
         repo=repo,
-        tags=tags,
-        related=related,
+        tags=normalized_tags,
+        related=normalized_related,
         status=status,
         extra_fields=note_extra_fields or None,
     )
@@ -91,16 +95,16 @@ def _write_note(
 
 
 def kb_adr(
-    slug: str,
-    summary: str,
-    content: str,
-    ai_tool: str,
+    slug: str | None = None,
+    summary: str | None = None,
+    content: str | None = None,
+    ai_tool: str | None = None,
     ai_client: str | None = None,
     project: str | None = None,
     cwd: str | None = None,
     repo: str | None = None,
-    tags: list[str] | None = None,
-    related: list[str] | None = None,
+    tags: list[str] | str | None = None,
+    related: list[str] | str | None = None,
     status: str = "accepted",
     extra_fields: dict[str, str] | None = None,
     fixed_ulid: str | None = None,
@@ -114,6 +118,8 @@ def kb_adr(
     When a decision supersedes a previous ADR, set the old ADR's status to 'superseded'
     and link them via 'related'.
     """
+    if summary is None or content is None or ai_tool is None:
+        raise TypeError("summary, content, and ai_tool are required")
     project_name, repo_id = _resolve_or_error(project, cwd, repo)
     return _write_note(
         project=project_name,
@@ -134,16 +140,16 @@ def kb_adr(
 
 
 def kb_gap(
-    slug: str,
-    summary: str,
-    content: str,
-    ai_tool: str,
+    slug: str | None = None,
+    summary: str | None = None,
+    content: str | None = None,
+    ai_tool: str | None = None,
     ai_client: str | None = None,
     project: str | None = None,
     cwd: str | None = None,
     repo: str | None = None,
-    tags: list[str] | None = None,
-    related: list[str] | None = None,
+    tags: list[str] | str | None = None,
+    related: list[str] | str | None = None,
     extra_fields: dict[str, str] | None = None,
     fixed_ulid: str | None = None,
     fixed_filename: str | None = None,
@@ -156,6 +162,8 @@ def kb_gap(
     - Why the gap occurred
     - How to avoid it in the future
     """
+    if summary is None or content is None or ai_tool is None:
+        raise TypeError("summary, content, and ai_tool are required")
     project_name, repo_id = _resolve_or_error(project, cwd, repo)
     return _write_note(
         project=project_name,
@@ -175,16 +183,16 @@ def kb_gap(
 
 
 def kb_knowledge(
-    slug: str,
-    summary: str,
-    content: str,
-    ai_tool: str,
+    slug: str | None = None,
+    summary: str | None = None,
+    content: str | None = None,
+    ai_tool: str | None = None,
     ai_client: str | None = None,
     project: str | None = None,
     cwd: str | None = None,
     repo: str | None = None,
-    tags: list[str] | None = None,
-    related: list[str] | None = None,
+    tags: list[str] | str | None = None,
+    related: list[str] | str | None = None,
     extra_fields: dict[str, str] | None = None,
     fixed_ulid: str | None = None,
     fixed_filename: str | None = None,
@@ -194,6 +202,8 @@ def kb_knowledge(
     Records technical knowledge, patterns, gotchas, or insights
     that are worth preserving for future reference.
     """
+    if summary is None or content is None or ai_tool is None:
+        raise TypeError("summary, content, and ai_tool are required")
     project_name, repo_id = _resolve_or_error(project, cwd, repo)
     return _write_note(
         project=project_name,
@@ -220,8 +230,8 @@ def kb_session(
     project: str | None = None,
     cwd: str | None = None,
     repo: str | None = None,
-    tags: list[str] | None = None,
-    related: list[str] | None = None,
+    tags: list[str] | str | None = None,
+    related: list[str] | str | None = None,
     extra_fields: dict[str, str] | None = None,
     fixed_ulid: str | None = None,
     fixed_filename: str | None = None,
@@ -236,6 +246,8 @@ def kb_session(
     d = _ensure_project_dir(project_name, "session-log")
     ulid = fixed_ulid or generate_ulid()
     filename = fixed_filename or build_session_filename(ulid=ulid)
+    normalized_tags = normalize_string_list(tags)
+    normalized_related = normalize_string_list(related)
     context = REQUEST_CONTEXT.get()
     note_extra_fields = dict(extra_fields or {})
     if context and context.get("save_request_id"):
@@ -246,8 +258,8 @@ def kb_session(
         ai_tool=ai_tool,
         ai_client=ai_client,
         repo=repo_id,
-        tags=tags,
-        related=related,
+        tags=normalized_tags,
+        related=normalized_related,
         extra_fields=note_extra_fields or None,
     )
     filepath = d / filename
@@ -263,16 +275,16 @@ def kb_session(
 
 
 def kb_draft(
-    slug: str,
-    summary: str,
-    content: str,
-    ai_tool: str,
+    slug: str | None = None,
+    summary: str | None = None,
+    content: str | None = None,
+    ai_tool: str | None = None,
     ai_client: str | None = None,
     project: str | None = None,
     cwd: str | None = None,
     repo: str | None = None,
-    tags: list[str] | None = None,
-    related: list[str] | None = None,
+    tags: list[str] | str | None = None,
+    related: list[str] | str | None = None,
     extra_fields: dict[str, str] | None = None,
 ) -> str:
     """Save a draft — an idea, a want-to-do, or a casual memo.
@@ -280,6 +292,8 @@ def kb_draft(
     If project is resolved, saves to notes/projects/{project}/draft/.
     If project cannot be resolved, saves to notes/inbox/.
     """
+    if summary is None or content is None or ai_tool is None:
+        raise TypeError("summary, content, and ai_tool are required")
     project_name, repo_id = resolve_project(project=project, cwd=cwd, repo=repo)
 
     if project_name:
@@ -289,7 +303,10 @@ def kb_draft(
     d.mkdir(parents=True, exist_ok=True)
 
     ulid = generate_ulid()
-    filename = build_filename(slug=slugify(slug), ulid=ulid)
+    normalized_tags = normalize_string_list(tags)
+    normalized_related = normalize_string_list(related)
+    effective_slug = slug or summary
+    filename = build_filename(slug=slugify(effective_slug), ulid=ulid)
     context = REQUEST_CONTEXT.get()
     note_extra_fields = dict(extra_fields or {})
     if context and context.get("save_request_id"):
@@ -300,8 +317,8 @@ def kb_draft(
         ai_tool=ai_tool,
         ai_client=ai_client,
         repo=repo_id,
-        tags=tags,
-        related=related,
+        tags=normalized_tags,
+        related=normalized_related,
         extra_fields=note_extra_fields or None,
     )
     filepath = d / filename
@@ -326,8 +343,8 @@ def save_note_by_type(
     cwd: str | None = None,
     repo: str | None = None,
     slug: str | None = None,
-    tags: list[str] | None = None,
-    related: list[str] | None = None,
+    tags: list[str] | str | None = None,
+    related: list[str] | str | None = None,
     status: str | None = None,
     extra_fields: dict[str, str] | None = None,
     fixed_ulid: str | None = None,

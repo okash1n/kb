@@ -4,6 +4,7 @@ import json
 import re
 
 from kb_mcp.config import kb_data_root, projects_dir, safe_resolve
+from kb_mcp.input_normalization import normalize_string_list
 from kb_mcp import obsidian
 
 ULID_PATTERN = re.compile(r"^[0-9A-Z]{26}$")
@@ -12,7 +13,7 @@ ULID_PATTERN = re.compile(r"^[0-9A-Z]{26}$")
 async def kb_search(
     query: str,
     project: str | None = None,
-    tags: list[str] | None = None,
+    tags: list[str] | str | None = None,
     note_type: str | None = None,
     limit: int = 20,
 ) -> str:
@@ -27,8 +28,9 @@ async def kb_search(
     """
     # Validate project name via safe_resolve (prevents traversal + normalizes)
     if project:
-        resolved = safe_resolve(projects_dir(), project)
-        rel_project = resolved.relative_to(projects_dir())
+        projects_root = projects_dir().resolve()
+        resolved = safe_resolve(projects_root, project).resolve()
+        rel_project = resolved.relative_to(projects_root)
         project = str(rel_project)
 
     # Build path filter
@@ -43,7 +45,8 @@ async def kb_search(
     result = await obsidian.search(query=query, path=search_path, limit=limit)
 
     # If tags filter specified, post-filter results
-    if tags and result:
+    normalized_tags = normalize_string_list(tags)
+    if normalized_tags and result:
         try:
             data = json.loads(result)
             filtered = []
@@ -52,8 +55,8 @@ async def kb_search(
                 try:
                     props = await obsidian.run("properties", f"path={filepath}", "format=json")
                     props_data = json.loads(props)
-                    note_tags = props_data.get("tags", [])
-                    if all(t in note_tags for t in tags):
+                    note_tags = normalize_string_list(props_data.get("tags", [])) or []
+                    if all(t in note_tags for t in normalized_tags):
                         filtered.append(item)
                 except Exception:
                     continue

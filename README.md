@@ -124,6 +124,11 @@ kb-mcp doctor
 | `kb_organize` | リンク候補の発見・提案 |
 | `kb_graduate` | general/への昇格提案 |
 
+保存系 / 検索系の入力互換:
+- `kb_adr` / `kb_gap` / `kb_knowledge` / `kb_draft` の `slug` は省略可能。未指定時は `summary` から補完される
+- `tags` / `related` / `kb_search.tags` は配列を優先するが、クライアント互換のためカンマ区切り文字列や JSON 風文字列も受け付ける
+- schema 更新後もクライアントが古い定義を保持している場合は、MCP サーバーの再起動または再接続が必要になることがある
+
 ## CLI コマンド
 
 | コマンド | 役割 |
