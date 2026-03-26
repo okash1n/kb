@@ -53,8 +53,8 @@ def init(
 
 # --- Save tools ---
 
-@mcp.tool()
-def adr(
+@mcp.tool(name="adr")
+def adr_tool(
     summary: str,
     content: str,
     ai_tool: str,
@@ -90,8 +90,34 @@ def adr(
     )
 
 
-@mcp.tool()
-def gap(
+def adr(
+    slug: str | None = None,
+    summary: str | None = None,
+    content: str | None = None,
+    ai_tool: str | None = None,
+    ai_client: str | None = None,
+    project: str | None = None,
+    cwd: str | None = None,
+    repo: str | None = None,
+    tags: list[str] | str | None = None,
+    related: list[str] | str | None = None,
+    status: str = "accepted",
+    ctx: Context | None = None,
+) -> str:
+    """Backward-compatible Python wrapper for ADR saves."""
+    if summary is None or content is None or ai_tool is None:
+        raise TypeError("summary, content, and ai_tool are required")
+    return _adr(
+        slug=slug, summary=summary, content=content,
+        ai_tool=ai_tool, ai_client=ai_client,
+        project=project, cwd=cwd, repo=repo,
+        tags=tags, related=related, status=status,
+        ctx=ctx,
+    )
+
+
+@mcp.tool(name="gap")
+def gap_tool(
     summary: str,
     content: str,
     ai_tool: str,
@@ -126,8 +152,33 @@ def gap(
     )
 
 
-@mcp.tool()
-def knowledge(
+def gap(
+    slug: str | None = None,
+    summary: str | None = None,
+    content: str | None = None,
+    ai_tool: str | None = None,
+    ai_client: str | None = None,
+    project: str | None = None,
+    cwd: str | None = None,
+    repo: str | None = None,
+    tags: list[str] | str | None = None,
+    related: list[str] | str | None = None,
+    ctx: Context | None = None,
+) -> str:
+    """Backward-compatible Python wrapper for gap saves."""
+    if summary is None or content is None or ai_tool is None:
+        raise TypeError("summary, content, and ai_tool are required")
+    return _gap(
+        slug=slug, summary=summary, content=content,
+        ai_tool=ai_tool, ai_client=ai_client,
+        project=project, cwd=cwd, repo=repo,
+        tags=tags, related=related,
+        ctx=ctx,
+    )
+
+
+@mcp.tool(name="knowledge")
+def knowledge_tool(
     summary: str,
     content: str,
     ai_tool: str,
@@ -151,6 +202,31 @@ def knowledge(
     Project is auto-resolved from cwd/repo if not specified.
     cwd/repo are used only for project resolution, not as save destinations.
     """
+    return _knowledge(
+        slug=slug, summary=summary, content=content,
+        ai_tool=ai_tool, ai_client=ai_client,
+        project=project, cwd=cwd, repo=repo,
+        tags=tags, related=related,
+        ctx=ctx,
+    )
+
+
+def knowledge(
+    slug: str | None = None,
+    summary: str | None = None,
+    content: str | None = None,
+    ai_tool: str | None = None,
+    ai_client: str | None = None,
+    project: str | None = None,
+    cwd: str | None = None,
+    repo: str | None = None,
+    tags: list[str] | str | None = None,
+    related: list[str] | str | None = None,
+    ctx: Context | None = None,
+) -> str:
+    """Backward-compatible Python wrapper for knowledge saves."""
+    if summary is None or content is None or ai_tool is None:
+        raise TypeError("summary, content, and ai_tool are required")
     return _knowledge(
         slug=slug, summary=summary, content=content,
         ai_tool=ai_tool, ai_client=ai_client,
@@ -192,8 +268,8 @@ def session(
     )
 
 
-@mcp.tool()
-def draft(
+@mcp.tool(name="draft")
+def draft_tool(
     summary: str,
     content: str,
     ai_tool: str,
@@ -217,6 +293,31 @@ def draft(
     Project is auto-resolved from cwd/repo if not specified.
     cwd/repo are used only for project resolution, not as save destinations.
     """
+    return _draft(
+        slug=slug, summary=summary, content=content,
+        ai_tool=ai_tool, ai_client=ai_client,
+        project=project, cwd=cwd, repo=repo,
+        tags=tags, related=related,
+        ctx=ctx,
+    )
+
+
+def draft(
+    slug: str | None = None,
+    summary: str | None = None,
+    content: str | None = None,
+    ai_tool: str | None = None,
+    ai_client: str | None = None,
+    project: str | None = None,
+    cwd: str | None = None,
+    repo: str | None = None,
+    tags: list[str] | str | None = None,
+    related: list[str] | str | None = None,
+    ctx: Context | None = None,
+) -> str:
+    """Backward-compatible Python wrapper for draft saves."""
+    if summary is None or content is None or ai_tool is None:
+        raise TypeError("summary, content, and ai_tool are required")
     return _draft(
         slug=slug, summary=summary, content=content,
         ai_tool=ai_tool, ai_client=ai_client,
