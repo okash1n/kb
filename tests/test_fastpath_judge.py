@@ -63,6 +63,12 @@ class FastpathJudgeTest(unittest.TestCase):
             encoding="utf-8",
         )
         load_config.cache_clear()
+        self.current_version_patcher = mock.patch("kb_mcp.doctor.current_version", return_value="0.17.3")
+        self.latest_version_patcher = mock.patch("kb_mcp.doctor.latest_version", return_value=("0.17.4", None))
+        self.current_version_patcher.start()
+        self.latest_version_patcher.start()
+        self.addCleanup(self.current_version_patcher.stop)
+        self.addCleanup(self.latest_version_patcher.stop)
 
     def test_fastpath_without_backend_falls_back_to_heuristic(self) -> None:
         partition_key = self._append_checkpoint(
@@ -149,7 +155,7 @@ time.sleep(2.0)
         )
 
         self.assertEqual(result["mode"], "fallback")
-        report = run_doctor(no_version_check=True)
+        report = run_doctor()
         self.assertIn("Fast-path judge backend: configured", report)
         self.assertIn("Fast-path breakers tracked: 1", report)
 
@@ -213,7 +219,7 @@ time.sleep(2.0)
                 model_hint="codex-cli",
             )
 
-        report = run_doctor(no_version_check=True)
+        report = run_doctor()
         self.assertIn("Fast-path breakers open: 1 ✗", report)
 
     def test_fastpath_still_falls_back_when_observation_write_fails(self) -> None:

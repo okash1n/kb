@@ -620,7 +620,7 @@ def cmd_doctor(args: argparse.Namespace) -> None:
     """Diagnose installation state."""
     from kb_mcp.doctor import run_doctor
 
-    print(run_doctor(no_version_check=args.no_version_check))
+    print(run_doctor())
 
 
 def cmd_judge_review_candidates(args: argparse.Namespace) -> None:
@@ -1064,7 +1064,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     # doctor
     doctor_parser = sub.add_parser("doctor", help="Diagnose installation state")
-    doctor_parser.add_argument("--no-version-check", action="store_true", help="Skip PyPI version check")
 
     # judge
     judge_parser = sub.add_parser("judge", help="Judge and review candidate commands")

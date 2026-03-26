@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import shutil
+import tomllib
 from pathlib import Path
 
 from kb_mcp.config import config_dir, load_config, runtime_events_db_path
@@ -20,11 +21,13 @@ from kb_mcp.install_hooks import (
     hooks_lib_dir,
     inspect_codex_hook_state,
 )
+from kb_mcp.update import current_version, is_outdated, latest_version
 
 
-def run_doctor(*, no_version_check: bool = False) -> str:
+def run_doctor() -> str:
     """Return a human-readable doctor report."""
     lines: list[str] = []
+    lines.extend(_version_checks())
     kb_cmd = shutil.which("kb-mcp")
     lines.append(_fmt("kb-mcp command", kb_cmd or "not found", bool(kb_cmd)))
 
@@ -70,6 +73,51 @@ def _source_checkout_root() -> Path | None:
     if (root / "pyproject.toml").exists() and (root / "src" / "kb_mcp" / "doctor.py").exists():
         return root
     return None
+
+
+def _source_checkout_version() -> str | None:
+    root = _source_checkout_root()
+    if root is None:
+        return None
+    pyproject_path = root / "pyproject.toml"
+    try:
+        data = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, tomllib.TOMLDecodeError):
+        return None
+    project = data.get("project")
+    if not isinstance(project, dict):
+        return None
+    version = project.get("version")
+    return version if isinstance(version, str) and version else None
+
+
+def _version_checks() -> list[str]:
+    lines: list[str] = []
+    installed = current_version() or _source_checkout_version()
+    if installed:
+        lines.append(_fmt("kb-mcp version", installed, True))
+    else:
+        lines.append(_fmt("kb-mcp version", "unknown", False))
+
+    latest, latest_error = latest_version()
+    if latest:
+        lines.append(_fmt("Latest kb-mcp version", latest, True))
+    else:
+        reason = latest_error or "unknown error"
+        lines.append(_fmt("Latest kb-mcp version", f"unavailable ({reason})", False))
+
+    if not installed or not latest:
+        lines.append(_fmt("Version status", "check failed", False))
+        return lines
+
+    outdated = is_outdated(installed, latest)
+    if outdated is True:
+        lines.append(_fmt("Version status", f"update available ({installed} -> {latest})", False))
+    elif outdated is False:
+        lines.append(_fmt("Version status", "up to date", True))
+    else:
+        lines.append(_fmt("Version status", "comparison failed", False))
+    return lines
 
 
 def _tool_checks() -> list[str]:
