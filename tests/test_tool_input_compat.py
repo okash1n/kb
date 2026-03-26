@@ -11,7 +11,7 @@ import anyio
 import yaml
 
 from kb_mcp.config import load_config
-from kb_mcp.server import mcp
+from kb_mcp.server import adr as server_adr, draft as server_draft, gap as server_gap, knowledge as server_knowledge, mcp
 from kb_mcp.tools.save import kb_adr, kb_draft, kb_gap, kb_knowledge, kb_session
 from kb_mcp.tools.search import kb_search
 
@@ -91,19 +91,21 @@ class ToolInputCompatTest(unittest.TestCase):
         self.assertTrue(knowledge_files[0].name.startswith("legacy-knowledge--"))
         self.assertTrue(draft_files[0].name.startswith("legacy-draft--"))
 
-    def test_session_accepts_comma_separated_tags(self) -> None:
+    def test_session_accepts_comma_separated_tags_and_related(self) -> None:
         result = kb_session(
             summary="session",
             content="body",
             ai_tool="codex",
             project=self.project,
             tags="alpha, beta, alpha",
+            related='["01AAA", "01BBB", "01AAA"]',
         )
 
         self.assertIn("Saved:", result)
         files = sorted((self.vault / "projects" / self.project / "session-log").glob("*.md"))
         text = files[0].read_text(encoding="utf-8")
         self.assertIn("tags: [alpha, beta]", text)
+        self.assertIn("related: [01AAA, 01BBB]", text)
 
     def test_save_tools_accept_json_tags_and_string_related(self) -> None:
         kb_knowledge(
@@ -207,3 +209,18 @@ class ToolInputCompatTest(unittest.TestCase):
                 {"type": "null"},
             ],
         )
+
+    def test_server_wrappers_preserve_legacy_positional_slug_order(self) -> None:
+        server_gap("server-gap", "summary", "body", "codex", project=self.project)
+        server_adr("server-adr", "summary", "body", "codex", project=self.project)
+        server_knowledge("server-knowledge", "summary", "body", "codex", project=self.project)
+        server_draft("server-draft", "summary", "body", "codex", project=self.project)
+
+        gap_files = sorted((self.vault / "projects" / self.project / "gap").glob("*.md"))
+        adr_files = sorted((self.vault / "projects" / self.project / "adr").glob("*.md"))
+        knowledge_files = sorted((self.vault / "projects" / self.project / "knowledge").glob("*.md"))
+        draft_files = sorted((self.vault / "projects" / self.project / "draft").glob("*.md"))
+        self.assertTrue(any(path.name.startswith("server-gap--") for path in gap_files))
+        self.assertTrue(any(path.name.startswith("server-adr--") for path in adr_files))
+        self.assertTrue(any(path.name.startswith("server-knowledge--") for path in knowledge_files))
+        self.assertTrue(any(path.name.startswith("server-draft--") for path in draft_files))

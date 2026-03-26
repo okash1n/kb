@@ -7,6 +7,17 @@
 
 ## [Unreleased]
 
+## [0.17.3] - 2026-03-26
+
+### Fixed
+
+- `tests.test_tool_input_compat` に `kb_mcp.server.adr/gap/knowledge/draft` の Python 直呼び出し互換 wrapper を直接叩く回帰テストを追加し、MCP schema が正しくても import 利用だけ壊れる状態を検知できるようにした
+- `kb_session` の互換入力テストを拡張し、`tags` だけでなく `related` の JSON 風文字列入力も正規化されることを固定した
+
+### Changed
+
+- `0.17.3` リリースに向けて patch version を更新した
+
 ## [0.17.2] - 2026-03-26
 
 ### Fixed
