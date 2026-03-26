@@ -7,6 +7,18 @@
 
 ## [Unreleased]
 
+## [0.17.4] - 2026-03-26
+
+### Fixed
+
+- `kb-mcp doctor` が毎回現在バージョンと PyPI 上の最新版を表示し、更新要否を先頭で判断できるようにした
+- `kb-mcp doctor` の未使用オプション `--no-version-check` を削除し、CLI surface と実装のずれを解消した
+
+### Changed
+
+- `AGENTS.md` を `CLAUDE.md` への symlink に反転し、Claude 系の learned rules を含む実体ファイルを正本として扱うようにした
+- `0.17.4` リリースに向けて patch version を更新した
+
 ## [0.17.3] - 2026-03-26
 
 ### Fixed

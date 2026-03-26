@@ -22,6 +22,7 @@ from kb_mcp.install_hooks import (
     inspect_codex_hook_state,
 )
 from kb_mcp.update import current_version, is_outdated, latest_version
+from packaging.version import InvalidVersion, Version
 
 
 def run_doctor() -> str:
@@ -114,7 +115,13 @@ def _version_checks() -> list[str]:
     if outdated is True:
         lines.append(_fmt("Version status", f"update available ({installed} -> {latest})", False))
     elif outdated is False:
-        lines.append(_fmt("Version status", "up to date", True))
+        try:
+            if Version(installed) > Version(latest):
+                lines.append(_fmt("Version status", f"local version ahead of PyPI ({installed} > {latest})", True))
+            else:
+                lines.append(_fmt("Version status", "up to date", True))
+        except InvalidVersion:
+            lines.append(_fmt("Version status", "comparison failed", False))
     else:
         lines.append(_fmt("Version status", "comparison failed", False))
     return lines

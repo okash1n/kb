@@ -149,6 +149,21 @@ class InstallAndDoctorTest(unittest.TestCase):
         self.assertIn("Claude hooks", report)
         self.assertIn("Codex hooks", report)
 
+    @mock.patch("shutil.which", return_value="/tmp/kb-mcp")
+    @mock.patch("kb_mcp.doctor.latest_version", return_value=("0.17.3", None))
+    @mock.patch("kb_mcp.doctor.current_version", return_value="0.17.4")
+    def test_doctor_reports_local_version_ahead_of_pypi(
+        self,
+        _current_version: mock.Mock,
+        _latest_version: mock.Mock,
+        _which: mock.Mock,
+    ) -> None:
+        report = run_doctor()
+
+        self.assertIn("kb-mcp version: 0.17.4 ✓", report)
+        self.assertIn("Latest kb-mcp version: 0.17.3 ✓", report)
+        self.assertIn("Version status: local version ahead of PyPI (0.17.4 > 0.17.3) ✓", report)
+
     def test_doctor_reports_nonzero_dead_letters(self) -> None:
         store = EventStore()
         with store.transaction() as conn:
