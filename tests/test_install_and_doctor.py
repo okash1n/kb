@@ -47,6 +47,12 @@ class InstallAndDoctorTest(unittest.TestCase):
             encoding="utf-8",
         )
         load_config.cache_clear()
+        self.current_version_patcher = mock.patch("kb_mcp.doctor.current_version", return_value="0.17.3")
+        self.latest_version_patcher = mock.patch("kb_mcp.doctor.latest_version", return_value=("0.17.4", None))
+        self.current_version_patcher.start()
+        self.latest_version_patcher.start()
+        self.addCleanup(self.current_version_patcher.stop)
+        self.addCleanup(self.latest_version_patcher.stop)
 
     @mock.patch("shutil.which", return_value="/tmp/kb-mcp")
     def test_install_hooks_execute_writes_supported_configs(self, _which: mock.Mock) -> None:
@@ -133,12 +139,30 @@ class InstallAndDoctorTest(unittest.TestCase):
             '[features]\ncodex_hooks = true\n[mcp_servers.kb]\ncommand = "kb-mcp"\nargs = ["serve"]\n',
             encoding="utf-8",
         )
-        report = run_doctor(no_version_check=True)
+        report = run_doctor()
+        self.assertIn("kb-mcp version: 0.17.3 ✓", report)
+        self.assertIn("Latest kb-mcp version: 0.17.4 ✓", report)
+        self.assertIn("Version status: update available (0.17.3 -> 0.17.4) ✗", report)
         self.assertIn("Event DB", report)
         self.assertIn("Dead letters", report)
         self.assertIn("Promotion plans", report)
         self.assertIn("Claude hooks", report)
         self.assertIn("Codex hooks", report)
+
+    @mock.patch("shutil.which", return_value="/tmp/kb-mcp")
+    @mock.patch("kb_mcp.doctor.latest_version", return_value=("0.17.3", None))
+    @mock.patch("kb_mcp.doctor.current_version", return_value="0.17.4")
+    def test_doctor_reports_local_version_ahead_of_pypi(
+        self,
+        _current_version: mock.Mock,
+        _latest_version: mock.Mock,
+        _which: mock.Mock,
+    ) -> None:
+        report = run_doctor()
+
+        self.assertIn("kb-mcp version: 0.17.4 ✓", report)
+        self.assertIn("Latest kb-mcp version: 0.17.3 ✓", report)
+        self.assertIn("Version status: local version ahead of PyPI (0.17.4 > 0.17.3) ✓", report)
 
     def test_doctor_reports_nonzero_dead_letters(self) -> None:
         store = EventStore()
@@ -164,7 +188,7 @@ class InstallAndDoctorTest(unittest.TestCase):
                 VALUES ('compact:test:1', 1, 'checkpoint_writer', 'dead_letter', '2026-03-25T00:00:00+00:00', NULL, 'boom', '2026-03-25T00:00:00+00:00')
                 """
             )
-        report = run_doctor(no_version_check=True)
+        report = run_doctor()
         self.assertIn("Dead letters: 1 ✗", report)
 
     def test_doctor_handles_unreadable_mcp_config(self) -> None:
@@ -172,7 +196,7 @@ class InstallAndDoctorTest(unittest.TestCase):
         claude_json.parent.mkdir(parents=True, exist_ok=True)
         claude_json.write_text("{broken", encoding="utf-8")
 
-        report = run_doctor(no_version_check=True)
+        report = run_doctor()
 
         self.assertIn(f"Claude MCP: {claude_json} unreadable ✗", report)
 
@@ -190,7 +214,7 @@ class InstallAndDoctorTest(unittest.TestCase):
             return original_read_text(path, *args, **kwargs)
 
         with mock.patch("pathlib.Path.read_text", autospec=True, side_effect=_read_text_with_codex_failure):
-            report = run_doctor(no_version_check=True)
+            report = run_doctor()
 
         self.assertIn(f"Codex MCP: {config_path} unreadable ✗", report)
 
@@ -258,7 +282,7 @@ class InstallAndDoctorTest(unittest.TestCase):
             human_label=None,
         )
 
-        report = run_doctor(no_version_check=True)
+        report = run_doctor()
 
         self.assertIn("Judge runs pending: 1", report)
         self.assertIn("Review candidates pending: 0", report)
@@ -329,7 +353,7 @@ class InstallAndDoctorTest(unittest.TestCase):
             lease_expires_at="2026-03-25T00:00:00+00:00",
         )
 
-        report = run_doctor(no_version_check=True)
+        report = run_doctor()
 
         self.assertIn("Materialization records: 3", report)
         self.assertIn("Materializations repair pending: 1 ✗", report)
@@ -381,7 +405,7 @@ class InstallAndDoctorTest(unittest.TestCase):
             saved_note_path=None,
         )
 
-        report = run_doctor(no_version_check=True)
+        report = run_doctor()
 
         self.assertIn("Learning assets: 1", report)
         self.assertIn("Learning packets: 1", report)
@@ -406,7 +430,7 @@ class InstallAndDoctorTest(unittest.TestCase):
         store.dead_letter_count.return_value = 0
         store.judge_run_counts.side_effect = sqlite3.OperationalError("broken")
 
-        report = run_doctor(no_version_check=True)
+        report = run_doctor()
 
         self.assertIn("Judge metrics: OperationalError ✗", report)
         self.assertIn("Runtime metrics: OperationalError ✗", report)
@@ -420,7 +444,7 @@ class InstallAndDoctorTest(unittest.TestCase):
         db_path.parent.mkdir(parents=True, exist_ok=True)
         db_path.touch()
 
-        report = run_doctor(no_version_check=True)
+        report = run_doctor()
 
         self.assertIn("Fast-path breaker metrics: OperationalError ✗", report)
 
