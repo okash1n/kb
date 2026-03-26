@@ -7,6 +7,18 @@
 
 ## [Unreleased]
 
+## [0.19.1] - 2026-03-26
+
+### Added
+
+- `kb-mcp hook summarize-dispatch` を追加し、`hook dispatch` の JSON から人間向け recommendation 文面を生成できるようにした
+
+### Changed
+
+- Claude / Copilot / Codex の generated hook wrapper と legacy `hooks/on-session-end.sh` が dispatch 結果を recommendation 文面へ変換して surfacing するようにした
+- Codex wrapper は recommendation を stderr に出し、raw JSON をそのまま会話へ流さないようにした
+- `0.19.1` リリースに向けて patch version を更新した
+
 ## [0.19.0] - 2026-03-26
 
 ### Added

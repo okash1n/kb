@@ -46,13 +46,6 @@ def write_wrapper_script(
     hooks_dir = hooks_lib_dir()
     hooks_dir.mkdir(parents=True, exist_ok=True)
     script = hooks_dir / f"{name}.sh"
-    dispatch_command = (
-        f'printf "%s" "${{PAYLOAD}}" | "{kb_mcp_path}" hook dispatch '
-        f"--tool {tool} --client {client} --layer client_hook --event turn_checkpointed --judge-fastpath --run-worker"
-    )
-    if suppress_stdout:
-        dispatch_command += " >/dev/null"
-
     lines = [
         "#!/usr/bin/env bash",
         "set -euo pipefail",
@@ -85,7 +78,16 @@ def write_wrapper_script(
         "print(json.dumps(payload, ensure_ascii=False))",
         "PY",
         ')"',
-        dispatch_command.replace("--judge-fastpath", '${JUDGE_FASTPATH_FLAG}'),
+        'DISPATCH_OUTPUT="$(printf "%s" "${PAYLOAD}" | '
+        f'"{kb_mcp_path}" hook dispatch '
+        f'--tool {tool} --client {client} --layer client_hook --event turn_checkpointed ${{JUDGE_FASTPATH_FLAG}} --run-worker',
+        ')"',
+        'SURFACING_OUTPUT="$(printf "%s" "${DISPATCH_OUTPUT}" | '
+        f'"{kb_mcp_path}" hook summarize-dispatch',
+        ')"',
+        'if [[ -n "${SURFACING_OUTPUT}" ]]; then',
+        ('  printf "%s\\n" "${SURFACING_OUTPUT}" >&2' if suppress_stdout else '  printf "%s\\n" "${SURFACING_OUTPUT}"'),
+        "fi",
         "",
     ]
     script.write_text("\n".join(lines), encoding="utf-8")

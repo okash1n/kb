@@ -6,11 +6,14 @@ import sqlite3
 import subprocess
 import tempfile
 import unittest
+import io
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
 
 import yaml
 
+from kb_mcp import cli
 from kb_mcp.config import load_config, runtime_events_db_path
 from kb_mcp.events.scheduler import scheduler_marker_path
 from kb_mcp.events.store import EventStore
@@ -453,7 +456,79 @@ class InstallAndDoctorTest(unittest.TestCase):
         install_codex(execute=False)
         wrapper = Path(os.environ["HOME"]) / ".local" / "lib" / "kb-mcp" / "hooks" / "codex-session-end.sh"
         content = wrapper.read_text(encoding="utf-8")
-        self.assertIn(">/dev/null", content)
+        self.assertIn('hook summarize-dispatch', content)
+        self.assertIn('printf "%s\\n" "${SURFACING_OUTPUT}" >&2', content)
+
+    def test_hook_summarize_dispatch_renders_first_bundle(self) -> None:
+        payload = {
+            "judge_fastpath": {
+                "proposal_bundles": [
+                    {
+                        "headline": "この区切りで gap 候補 1 件、knowledge 候補 1 件 をまとめてレビューできます。",
+                        "summary": "gap 候補 1 件、knowledge 候補 1 件 が見つかりました。文脈: slug を直した / tags を直した",
+                        "checkpoint_summaries": ["slug を直した", "tags を直した"],
+                    },
+                    {
+                        "headline": "secondary",
+                        "summary": "secondary summary",
+                        "checkpoint_summaries": [],
+                    },
+                ]
+            }
+        }
+
+        buf = io.StringIO()
+        with (
+            mock.patch("sys.argv", ["kb-mcp", "hook", "summarize-dispatch"]),
+            mock.patch("sys.stdin.read", return_value=json.dumps(payload, ensure_ascii=False)),
+            mock.patch("select.select", return_value=([mock.Mock()], [], [])),
+            redirect_stdout(buf),
+        ):
+            cli.main()
+
+        output = buf.getvalue()
+        self.assertIn("kb recommendation:", output)
+        self.assertIn("文脈: slug を直した / tags を直した", output)
+        self.assertIn("ほかに 1 bundle あります。", output)
+
+    def test_install_codex_wrapper_surfaces_recommendation_on_stderr(self) -> None:
+        fake_kb = Path(self.tmpdir.name) / "fake-kb-mcp.sh"
+        fake_kb.write_text(
+            "\n".join(
+                [
+                    "#!/usr/bin/env bash",
+                    "set -euo pipefail",
+                    'if [[ \"$1\" == \"hook\" && \"$2\" == \"dispatch\" ]]; then',
+                    "  cat >/dev/null",
+                    "  printf '%s\\n' '{\"judge_fastpath\":{\"proposal_bundles\":[{\"headline\":\"この区切りを session-log 候補として提案できます。\",\"summary\":\"session-log 候補 1 件 が見つかりました。\",\"checkpoint_summaries\":[\"checkpoint A\"]}]}}'",
+                    'elif [[ \"$1\" == \"hook\" && \"$2\" == \"summarize-dispatch\" ]]; then',
+                    "  cat >/dev/null",
+                    "  printf '%s\\n' 'kb recommendation:'",
+                    "  printf '%s\\n' 'この区切りを session-log 候補として提案できます。'",
+                    "else",
+                    "  exit 1",
+                    "fi",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        fake_kb.chmod(0o755)
+
+        with mock.patch("shutil.which", return_value=str(fake_kb)):
+            install_codex(execute=False)
+        wrapper = Path(os.environ["HOME"]) / ".local" / "lib" / "kb-mcp" / "hooks" / "codex-session-end.sh"
+
+        completed = subprocess.run(
+            [str(wrapper)],
+            input=json.dumps({"summary": "stop", "content": "body"}),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertEqual(completed.returncode, 0)
+        self.assertEqual(completed.stdout.strip(), "")
+        self.assertIn("kb recommendation:", completed.stderr)
 
     @mock.patch("shutil.which", return_value="/tmp/kb-mcp")
     def test_dry_run_does_not_install_scheduler_marker(self, _which: mock.Mock) -> None:
@@ -468,7 +543,14 @@ class InstallAndDoctorTest(unittest.TestCase):
                 [
                     "#!/usr/bin/env bash",
                     "set -euo pipefail",
-                    f"cat > {capture_json}",
+                    'if [[ "$1" == "hook" && "$2" == "dispatch" ]]; then',
+                    f"  cat > {capture_json}",
+                    "  printf '%s\\n' '{}'",
+                    'elif [[ "$1" == "hook" && "$2" == "summarize-dispatch" ]]; then',
+                    "  cat >/dev/null",
+                    "else",
+                    "  exit 1",
+                    "fi",
                     "",
                 ]
             ),

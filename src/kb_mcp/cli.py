@@ -457,6 +457,49 @@ def _read_stdin_payload() -> dict:
         return {"content": raw}
 
 
+def _proposal_bundles_from_dispatch(payload: dict[str, object]) -> list[dict[str, object]]:
+    judge_fastpath = payload.get("judge_fastpath")
+    if isinstance(judge_fastpath, dict):
+        bundles = judge_fastpath.get("proposal_bundles")
+        if isinstance(bundles, list):
+            return [bundle for bundle in bundles if isinstance(bundle, dict)]
+    bundles = payload.get("suggestion_bundles")
+    if isinstance(bundles, list):
+        return [bundle for bundle in bundles if isinstance(bundle, dict)]
+    return []
+
+
+def _render_dispatch_summary(payload: dict[str, object]) -> str:
+    bundles = _proposal_bundles_from_dispatch(payload)
+    if not bundles:
+        return ""
+    first = bundles[0]
+    headline = str(first.get("headline") or "kb から保存候補があります。")
+    summary = str(first.get("summary") or "").strip()
+    checkpoint_summaries = [
+        str(item).strip()
+        for item in (first.get("checkpoint_summaries") or [])
+        if str(item).strip()
+    ]
+    lines = ["kb recommendation:", headline]
+    if summary:
+        lines.append(summary)
+    if checkpoint_summaries:
+        lines.append(f"文脈: {' / '.join(checkpoint_summaries[:2])}")
+    remaining = len(bundles) - 1
+    if remaining > 0:
+        lines.append(f"ほかに {remaining} bundle あります。")
+    return "\n".join(lines)
+
+
+def cmd_hook_summarize_dispatch(args: argparse.Namespace) -> None:
+    """Render dispatch JSON into a human-facing recommendation snippet."""
+    payload = _read_stdin_payload()
+    summary = _render_dispatch_summary(payload)
+    if summary:
+        print(summary)
+
+
 def cmd_hook_dispatch(args: argparse.Namespace) -> None:
     """Normalize, persist, and optionally drain a hook event."""
     from kb_mcp.events.adapters import (
@@ -1034,6 +1077,7 @@ def build_parser() -> argparse.ArgumentParser:
     dispatch_parser.add_argument("--payload-file")
     dispatch_parser.add_argument("--run-worker", action="store_true", help="Drain worker after dispatch")
     dispatch_parser.add_argument("--judge-fastpath", action="store_true", help="Attempt fast-path judge before worker drain and return proposal bundles")
+    hook_sub.add_parser("summarize-dispatch", help="Render dispatch JSON into a human-facing recommendation snippet")
 
     # worker
     worker_parser = sub.add_parser("worker", help="Event worker commands")
@@ -1135,6 +1179,8 @@ def main() -> None:
             cmd_hook_session_end(args)
         elif args.hook_command == "dispatch":
             cmd_hook_dispatch(args)
+        elif args.hook_command == "summarize-dispatch":
+            cmd_hook_summarize_dispatch(args)
         else:
             parser.parse_args(["hook", "--help"])
     elif args.command == "worker":
