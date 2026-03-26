@@ -11,7 +11,13 @@ import yaml
 from kb_mcp.config import load_config
 from kb_mcp.events.judge_inputs import build_window_payload, build_windows
 from kb_mcp.events.normalize import normalize_event
-from kb_mcp.events.policies.promotion_applier import _heartbeat_loop, _load_plan, _materialization_target
+from kb_mcp.events.policies.promotion_applier import (
+    _heartbeat_loop,
+    _load_plan,
+    _materialization_target,
+    _plan_path,
+    apply_promotion,
+)
 from kb_mcp.events.store import EventStore
 from kb_mcp.events.worker import run_once
 from kb_mcp.note import parse_frontmatter
@@ -200,6 +206,50 @@ class MaterializeApplierTest(unittest.TestCase):
         self.assertEqual(candidate["status"], "materialized")
         self.assertEqual(record["status"], "applied")
         self.assertEqual(record["note_id"], gap_fm["id"])
+        plan_row = _Row(
+            logical_key="materialize:candidate-gap:gap",
+            aggregate_type="review_materialization",
+            aggregate_version=1,
+        )
+        self.assertFalse(_plan_path(plan_row).exists())  # type: ignore[arg-type]
+
+    def test_session_promotion_deletes_plan_after_success(self) -> None:
+        promotions_dir = self.config_dir / "runtime" / "events" / "promotions"
+        promotions_dir.mkdir(parents=True, exist_ok=True)
+        row = _Row(
+            logical_key="tool:standalone:kb:kb-mcp:42",
+            aggregate_type="tool",
+            aggregate_version=1,
+            project=self.project,
+        )
+        plan_path = _plan_path(row)  # type: ignore[arg-type]
+        plan_path.write_text(
+            """
+{
+  "note_type": "session-log",
+  "density": "rich",
+  "summary": "session promotion summary",
+  "content": "session promotion body",
+  "project": "demo",
+  "cwd": null,
+  "repo": "github.com/example/repo",
+  "ai_tool": "codex",
+  "ai_client": "codex-cli",
+  "related": [],
+  "tags": ["promotion", "session-log"],
+  "promotion_key": "rich:gap:test-session-promotion"
+}
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        receipt = apply_promotion(row)  # type: ignore[arg-type]
+
+        self.assertTrue(receipt)
+        self.assertFalse(plan_path.exists())
+        record_path = self.config_dir / "runtime" / "events" / "promotion-records" / "rich__gap__test-session-promotion.json"
+        self.assertTrue(record_path.exists())
 
     def test_relabel_materialization_creates_knowledge_note(self) -> None:
         store = EventStore()

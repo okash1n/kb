@@ -38,6 +38,7 @@ def apply_promotion(row: sqlite3.Row) -> str:
 def _apply_session_promotion(row: sqlite3.Row) -> str:
     receipt = sink_receipt("promotion_applier", row["logical_key"], int(row["aggregate_version"]))
     if _receipt_exists(row["project"], receipt):
+        _delete_plan(row)
         return receipt
 
     plan = _load_plan(row)
@@ -77,6 +78,7 @@ def _apply_session_promotion(row: sqlite3.Row) -> str:
                 "density": plan["density"],
             },
         )
+        _delete_plan(row)
         return receipt
     finally:
         REQUEST_CONTEXT.reset(token)
@@ -111,6 +113,7 @@ def _apply_materialization(row: sqlite3.Row) -> str:
         if adopted is not None:
             _ensure_lease_held(lost_lease)
             _record_materialized_note(store, record, plan, adopted["note_id"], adopted["note_path"], receipt)
+            _delete_plan(row)
             return receipt
 
         context: dict[str, str] = {}
@@ -148,6 +151,7 @@ def _apply_materialization(row: sqlite3.Row) -> str:
                 context.get("saved_note_path"),
                 receipt,
             )
+            _delete_plan(row)
             return receipt
         finally:
             REQUEST_CONTEXT.reset(token)
@@ -211,6 +215,11 @@ def _record_materialized_note(
 
 
 def _load_plan(row: sqlite3.Row) -> dict[str, object]:
+    path = _plan_path(row)
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _plan_path(row: sqlite3.Row) -> Path:
     safe_name = row["logical_key"].replace(":", "__")
     prefix = "materialize__" if row["aggregate_type"] == "review_materialization" else "session__"
     path = runtime_events_dir() / "promotions" / f"{prefix}{safe_name}__v{int(row['aggregate_version'])}.json"
@@ -218,7 +227,15 @@ def _load_plan(row: sqlite3.Row) -> dict[str, object]:
         legacy_path = runtime_events_dir() / "promotions" / f"{safe_name}.json"
         if legacy_path.exists():
             path = legacy_path
-    return json.loads(path.read_text(encoding="utf-8"))
+    return path
+
+
+def _delete_plan(row: sqlite3.Row) -> None:
+    path = _plan_path(row)
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return
 
 
 def _records_dir() -> Path:

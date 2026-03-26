@@ -7,6 +7,17 @@
 
 ## [Unreleased]
 
+## [0.17.5] - 2026-03-26
+
+### Fixed
+
+- `promotion_applier` が note materialization / session promotion 成功後に対応する promotion plan JSON を削除するようにし、`Promotion plans` が未処理 backlog と一致するようにした
+- promotion plan cleanup の回帰テストを追加し、適用済み plan が runtime に残り続ける状態を再発しにくくした
+
+### Changed
+
+- `0.17.5` リリースに向けて patch version を更新した
+
 ## [0.17.4] - 2026-03-26
 
 ### Fixed
