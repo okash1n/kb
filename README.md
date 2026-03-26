@@ -139,6 +139,7 @@ kb-mcp doctor
 | `kb-mcp config get <key>` | 設定値取得 |
 | `kb-mcp install hooks` | lifecycle hook の wrapper / snippet 生成 |
 | `kb-mcp hook dispatch` | raw hook payload を durable event として取り込み、fast-path 有効時は proposal bundle も返す |
+| `kb-mcp hook summarize-dispatch` | dispatch JSON を人間向け recommendation 文面へ変換する |
 | `kb-mcp worker run-once` | due な sink を 1 回 drain する |
 | `kb-mcp worker replay-dead-letter` | dead-letter 化した sink を ready に戻す |
 | `kb-mcp worker cleanup-runtime` | 古い runtime artifact を削除する |
@@ -190,7 +191,7 @@ judge / review の流れ:
 proposal surfacing:
 - `review-candidates` は threshold 到達時に `suggestion_bundles` を返し、同じ window の `gap` / `knowledge` / `adr` / `session_thin` をひとまとめにして扱える
 - `hook dispatch --judge-fastpath` は `final_hint` / `session_end` / thin `session-log` 境界で `proposal_bundles` を返し、会話の区切りタイミングに合わせて提案を surfacing できる
-- wrapper / client integration は `proposal_bundles` / `suggestion_bundles` をそのまま読んで、人間向けの確認メッセージに変換する想定とする
+- generated hook wrapper と legacy `hooks/on-session-end.sh` は `hook summarize-dispatch` を通して recommendation 文面へ変換し、そのまま client 側へ surfacing する
 
 runtime hygiene:
 - `kb-mcp doctor` は expired packet / orphan application / stale local asset を表示する

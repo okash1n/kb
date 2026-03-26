@@ -95,9 +95,19 @@ print(json.dumps(payload, ensure_ascii=False))
 PY
 )"
 
+dispatch_output="$(
 printf '%s' "${payload}" | "${kb_cmd}" hook dispatch \
   --tool "${ai_tool}" \
   --client "${client}" \
   --layer client_hook \
   --event turn_checkpointed \
   --run-worker
+)"
+
+surfacing_output="$(
+printf '%s' "${dispatch_output}" | "${kb_cmd}" hook summarize-dispatch
+)"
+
+if [[ -n "${surfacing_output}" ]]; then
+  printf '%s\n' "${surfacing_output}"
+fi
