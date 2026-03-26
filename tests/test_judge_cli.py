@@ -68,6 +68,39 @@ class _FailingOnceBackend:
         )
 
 
+class _WindowAwareBackend:
+    def prompt_version(self) -> str:
+        return "judge-review-candidates.v1"
+
+    def review_window(
+        self,
+        payload: dict[str, object],
+        *,
+        prompt_version: str,
+        model_hint: str | None = None,
+    ):
+        from kb_mcp.events.judge_backend import JudgeDecision
+
+        checkpoints = list(payload.get("checkpoints", []))
+        first_summary = str(checkpoints[0].get("summary", "")) if checkpoints else ""
+        if "bundle" in first_summary:
+            return JudgeDecision(
+                labels=[
+                    {"label": "gap", "score": 0.9, "reasons": ["explicit correction"]},
+                    {"label": "knowledge", "score": 0.8, "reasons": ["fact_confirmed"]},
+                ],
+                should_emit_thin_session=False,
+                carry_forward=False,
+                notes="bundle",
+            )
+        return JudgeDecision(
+            labels=[{"label": "adr", "score": 0.9, "reasons": ["agreement"]}],
+            should_emit_thin_session=False,
+            carry_forward=False,
+            notes="default",
+        )
+
+
 class JudgeCliTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmpdir = tempfile.TemporaryDirectory()
@@ -215,12 +248,37 @@ class JudgeCliTest(unittest.TestCase):
         )
         self.assertEqual(result["pending_review"], 5)
         self.assertEqual(result["suggested"], 5)
+        self.assertEqual(len(result["suggestion_bundles"]), 5)
         self.assertEqual(len(result["candidates"]), 1)
         with schema_locked_connection() as conn:
             rows = conn.execute(
                 "SELECT suggestion_seq FROM promotion_candidates ORDER BY candidate_key"
             ).fetchall()
         self.assertTrue(all(int(row["suggestion_seq"]) == 1 for row in rows))
+
+    def test_review_candidates_groups_multiple_labels_into_one_suggestion_bundle(self) -> None:
+        self._append_checkpoint_sequence(
+            session_id="session-bundle",
+            payloads=[{"summary": "bundle checkpoint", "content": "訂正して仕様も確定した", "occurred_at": "2026-03-25T00:00:00+00:00"}],
+        )
+        for idx in range(4):
+            self._append_checkpoint_sequence(
+                session_id=f"session-adr-{idx}",
+                payloads=[{"summary": "これでいこう", "content": "案Bにする", "occurred_at": f"2026-03-25T00:1{idx}:00+00:00"}],
+            )
+
+        result = self._run_review_candidates(
+            backend=_WindowAwareBackend(),
+            limit=10,
+        )
+
+        bundle = next(
+            item for item in result["suggestion_bundles"]
+            if item["session_id"] == "session-bundle"
+        )
+        self.assertEqual(bundle["labels"], ["gap", "knowledge"])
+        self.assertIn("gap 候補 1 件、knowledge 候補 1 件", bundle["summary"])
+        self.assertEqual(len(bundle["candidate_keys"]), 2)
 
     def test_review_candidates_resuggests_backlog_when_new_candidate_arrives(self) -> None:
         for idx in range(5):

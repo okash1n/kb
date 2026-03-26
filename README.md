@@ -138,14 +138,14 @@ kb-mcp doctor
 | `kb-mcp version` | 現在の `kb-mcp` バージョン表示 |
 | `kb-mcp config get <key>` | 設定値取得 |
 | `kb-mcp install hooks` | lifecycle hook の wrapper / snippet 生成 |
-| `kb-mcp hook dispatch` | raw hook payload を durable event として取り込む |
+| `kb-mcp hook dispatch` | raw hook payload を durable event として取り込み、fast-path 有効時は proposal bundle も返す |
 | `kb-mcp worker run-once` | due な sink を 1 回 drain する |
 | `kb-mcp worker replay-dead-letter` | dead-letter 化した sink を ready に戻す |
 | `kb-mcp worker cleanup-runtime` | 古い runtime artifact を削除する |
 | `kb-mcp worker repair-learning-runtime` | learning packet / asset / application の runtime hygiene を補修する |
 | `kb-mcp session run` | launcher 管理下で AI セッションを起動する |
 | `kb-mcp doctor` | config, event DB, scheduler, hooks, judge/review runtime を診断する |
-| `kb-mcp judge review-candidates` | checkpoint window を judge して review 候補を生成する |
+| `kb-mcp judge review-candidates` | checkpoint window を judge して review 候補と suggestion bundle を生成する |
 | `kb-mcp judge accept <candidate-key>` | review 候補を accept する |
 | `kb-mcp judge reject <candidate-key>` | review 候補を reject する |
 | `kb-mcp judge relabel <candidate-key> --label <label>` | review 候補を別ラベルへ relabel する |
@@ -187,6 +187,11 @@ judge / review の流れ:
 3. `kb-mcp judge accept` / `reject` / `relabel` で human verdict を review ledger に保存する
 4. `kb-mcp judge materialize` / `retry-failed-materializations` で accepted candidate を note へ反映する
 
+proposal surfacing:
+- `review-candidates` は threshold 到達時に `suggestion_bundles` を返し、同じ window の `gap` / `knowledge` / `adr` / `session_thin` をひとまとめにして扱える
+- `hook dispatch --judge-fastpath` は `final_hint` / `session_end` / thin `session-log` 境界で `proposal_bundles` を返し、会話の区切りタイミングに合わせて提案を surfacing できる
+- wrapper / client integration は `proposal_bundles` / `suggestion_bundles` をそのまま読んで、人間向けの確認メッセージに変換する想定とする
+
 runtime hygiene:
 - `kb-mcp doctor` は expired packet / orphan application / stale local asset を表示する
 - `kb-mcp worker repair-learning-runtime` は doctor で見つかった learning runtime の補修を行う
@@ -200,6 +205,7 @@ fast-path judge:
 - `KB_JUDGE_FASTPATH_COMMAND` を設定した hook wrapper だけが `hook dispatch --judge-fastpath` を有効にする
 - fast-path backend は contract version `1` と timeout `1.5s` を使う
 - backend 未設定 / timeout / breaker open 時は hook 完了を優先し、fallback judge は後段 review を塞がない prompt version で記録する
+- fast-path で proposal timing に達した window は `proposal_bundles` を返し、`gap` / `knowledge` と `session-log` 候補を同じ区切りで提案できる
 - 通常経路は `hook -> dispatch -> worker` のままで、fast-path judge は optional な inline 分岐としてだけ動く
 
 cross-client 前提:

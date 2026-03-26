@@ -7,6 +7,19 @@
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-03-26
+
+### Added
+
+- `kb-mcp judge review-candidates` が `suggestion_bundles` を返すようになり、同じ window に含まれる `gap` / `knowledge` / `adr` / `session_thin` 候補を 1 つの提案単位として扱えるようにした
+- `kb-mcp hook dispatch --judge-fastpath` が `proposal_bundles` を返すようになり、`final_hint` / `session_end` / thin `session-log` 境界で提案を surfacing できるようにした
+- judge / fast-path の bundle 回帰テストを追加し、multi-label window と final-hint boundary の両方を固定した
+
+### Changed
+
+- README と CLI help を proposal bundle surface に合わせて更新し、wrapper / client integration が同じ提案タイミングを利用しやすいようにした
+- `0.19.0` リリースに向けて minor version を更新した
+
 ## [0.18.0] - 2026-03-26
 
 ### Fixed

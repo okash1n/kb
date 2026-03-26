@@ -87,6 +87,7 @@ class FastpathJudgeTest(unittest.TestCase):
 
         self.assertEqual(result["mode"], "fallback")
         self.assertEqual(result["judged_windows"], 1)
+        self.assertEqual(result["proposal_bundles"], [])
         with schema_locked_connection() as conn:
             row = conn.execute(
                 "SELECT label FROM promotion_candidates ORDER BY candidate_key LIMIT 1"
@@ -309,6 +310,30 @@ time.sleep(2.0)
         result = json.loads(buf.getvalue())
         self.assertEqual(result["status"], "ready")
 
+    def test_fastpath_returns_proposal_bundle_at_final_hint_boundary(self) -> None:
+        partition_key = self._append_checkpoint(
+            session_id="session-final-hint",
+            summary="違う",
+            content="今後は slug を先に決めてほしい",
+            occurred_at="2026-03-25T00:00:00+00:00",
+            final_hint=True,
+        )
+
+        result = review_latest_window_fastpath(
+            partition_key=partition_key,
+            source_tool="codex",
+            source_client="codex-cli",
+            model_hint="codex-cli",
+        )
+
+        self.assertEqual(result["mode"], "fallback")
+        self.assertEqual(result["suggested"], 1)
+        self.assertEqual(len(result["proposal_bundles"]), 1)
+        bundle = result["proposal_bundles"][0]
+        self.assertEqual(bundle["labels"], ["gap"])
+        self.assertTrue(bundle["timing"]["final_hint"])
+        self.assertIn("gap 候補 1 件", bundle["summary"])
+
     def _append_checkpoint(
         self,
         *,
@@ -316,6 +341,7 @@ time.sleep(2.0)
         summary: str,
         content: str,
         occurred_at: str,
+        final_hint: bool = False,
     ) -> str:
         store = EventStore()
         payload = {
@@ -326,6 +352,7 @@ time.sleep(2.0)
             "summary": summary,
             "content": content,
             "occurred_at": occurred_at,
+            "final_hint": final_hint,
         }
         envelope = normalize_event(
             tool="codex",

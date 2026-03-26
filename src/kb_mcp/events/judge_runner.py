@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 import hashlib
 import json
 import threading
@@ -28,6 +29,13 @@ CANDIDATE_SCORE_THRESHOLD = 0.75
 FASTPATH_BREAKER_THRESHOLD = 3
 FASTPATH_BREAKER_SECONDS = 10 * 60
 FASTPATH_FALLBACK_PROMPT_SUFFIX = "+fastpath-fallback"
+LABEL_ORDER = {"adr": 0, "gap": 1, "knowledge": 2, "session_thin": 3}
+LABEL_DISPLAY = {
+    "adr": "ADR",
+    "gap": "gap",
+    "knowledge": "knowledge",
+    "session_thin": "session-log",
+}
 
 
 def review_candidates(
@@ -66,9 +74,11 @@ def review_candidates(
     pending_review_count = store.pending_review_candidate_count()
     suggestable = store.suggestable_review_candidates()
     suggested = 0
+    suggestion_bundles: list[dict[str, Any]] = []
     if pending_review_count >= SUGGESTION_THRESHOLD and suggestable:
         pending_rows = store.pending_review_candidates(limit=None)
         suggested = store.mark_candidates_suggested([row["candidate_key"] for row in pending_rows])
+        suggestion_bundles = _build_proposal_bundles(pending_rows)
 
     listed_rows = store.pending_review_candidates(limit=display_limit)
     return {
@@ -81,6 +91,7 @@ def review_candidates(
         "upserted_candidates": upserted_candidates,
         "pending_review": pending_review_count,
         "suggested": suggested,
+        "suggestion_bundles": suggestion_bundles,
         "candidates": [
             {
                 "candidate_key": row["candidate_key"],
@@ -104,7 +115,7 @@ def review_latest_window_fastpath(
     store = EventStore()
     windows = build_windows(partition_key)
     if not windows:
-        return {"mode": "none", "reason": "no_windows"}
+        return {"mode": "none", "reason": "no_windows", "suggested": 0, "proposal_bundles": []}
     payload = build_window_payload(windows[-1])
     backend_hash = fastpath_backend_command_hash()
     breaker_key = _breaker_key(source_tool, source_client, backend_hash)
@@ -120,7 +131,14 @@ def review_latest_window_fastpath(
             prompt_version=fallback_prompt_version,
             model_hint=model_hint,
         )
-        return {"mode": "fallback", "breaker_key": breaker_key, **outcome}
+        return _fastpath_response(
+            store=store,
+            partition_key=partition_key,
+            payload=payload,
+            breaker_key=breaker_key,
+            mode="fallback",
+            outcome=outcome,
+        )
     try:
         outcome = _review_window_once(
             store=store,
@@ -134,7 +152,14 @@ def review_latest_window_fastpath(
             store.clear_runtime_observation(breaker_key)
         except Exception:
             pass
-        return {"mode": "fastpath", "breaker_key": breaker_key, **outcome}
+        return _fastpath_response(
+            store=store,
+            partition_key=partition_key,
+            payload=payload,
+            breaker_key=breaker_key,
+            mode="fastpath",
+            outcome=outcome,
+        )
     except Exception as exc:
         try:
             _record_breaker_failure(store, breaker_key, error=str(exc))
@@ -154,7 +179,47 @@ def review_latest_window_fastpath(
             prompt_version=fallback_prompt_version,
             model_hint=model_hint,
         )
-        return {"mode": "fallback", "breaker_key": breaker_key, **outcome}
+        return _fastpath_response(
+            store=store,
+            partition_key=partition_key,
+            payload=payload,
+            breaker_key=breaker_key,
+            mode="fallback",
+            outcome=outcome,
+        )
+
+
+def _fastpath_response(
+    *,
+    store: EventStore,
+    partition_key: str,
+    payload: dict[str, Any],
+    breaker_key: str | None,
+    mode: str,
+    outcome: dict[str, Any],
+) -> dict[str, Any]:
+    suggestion_rows: list[Any] = []
+    suggested = 0
+    if _is_proposal_timing(payload, outcome.get("decision")):
+        pending_rows = store.pending_review_candidates(limit=None)
+        suggestion_rows = [
+            row
+            for row in pending_rows
+            if _candidate_partition_key(row) == partition_key
+            and (
+                _candidate_window_id(row) == payload["window_id"]
+                or _candidate_is_suggestable(row)
+            )
+        ]
+        if suggestion_rows:
+            suggested = store.mark_candidates_suggested([row["candidate_key"] for row in suggestion_rows])
+    return {
+        "mode": mode,
+        "breaker_key": breaker_key,
+        "suggested": suggested,
+        "proposal_bundles": _build_proposal_bundles(suggestion_rows),
+        **outcome,
+    }
 
 
 def _upsert_candidate(
@@ -190,10 +255,16 @@ def _review_window_once(
     backend: Any,
     prompt_version: str,
     model_hint: str | None,
-) -> dict[str, int]:
+) -> dict[str, Any]:
     existing = store.get_judge_run(window_id=window_payload["window_id"], prompt_version=prompt_version)
     if existing and existing["status"] == "judged":
-        return {"judged_windows": 0, "skipped_windows": 1, "failed_windows": 0, "upserted_candidates": 0}
+        return {
+            "judged_windows": 0,
+            "skipped_windows": 1,
+            "failed_windows": 0,
+            "upserted_candidates": 0,
+            "decision": None,
+        }
 
     judge_run_key = existing["judge_run_key"] if existing else generate_ulid()
     store.upsert_judge_run(
@@ -217,7 +288,13 @@ def _review_window_once(
         lease_expires_at=_lease_expires_at(),
     )
     if claimed is None:
-        return {"judged_windows": 0, "skipped_windows": 1, "failed_windows": 0, "upserted_candidates": 0}
+        return {
+            "judged_windows": 0,
+            "skipped_windows": 1,
+            "failed_windows": 0,
+            "upserted_candidates": 0,
+            "decision": None,
+        }
 
     stop_heartbeat = threading.Event()
     heartbeat_thread = threading.Thread(
@@ -270,7 +347,13 @@ def _review_window_once(
                 reasons=["carry_chain_terminal", "no_strong_labels"],
                 payload={"window": window_payload, "decision": decision},
             )
-        return {"judged_windows": 1, "skipped_windows": 0, "failed_windows": 0, "upserted_candidates": upserted_candidates}
+        return {
+            "judged_windows": 1,
+            "skipped_windows": 0,
+            "failed_windows": 0,
+            "upserted_candidates": upserted_candidates,
+            "decision": decision,
+        }
     except Exception as exc:
         store.upsert_judge_run(
             judge_run_key=claimed["judge_run_key"],
@@ -296,6 +379,124 @@ def _review_window_once(
     finally:
         stop_heartbeat.set()
         heartbeat_thread.join(timeout=HEARTBEAT_SECONDS)
+
+
+def _build_proposal_bundles(rows: list[Any]) -> list[dict[str, Any]]:
+    if not rows:
+        return []
+    grouped: dict[str, list[Any]] = {}
+    for row in rows:
+        grouped.setdefault(_candidate_window_id(row), []).append(row)
+    bundles: list[dict[str, Any]] = []
+    for window_id, bundle_rows in grouped.items():
+        if not window_id:
+            continue
+        bundles.append(_build_proposal_bundle(window_id, bundle_rows))
+    bundles.sort(key=lambda item: (int(item["window_index"] or 0), item["window_id"]))
+    return bundles
+
+
+def _build_proposal_bundle(window_id: str, rows: list[Any]) -> dict[str, Any]:
+    payload = _candidate_payload(rows[0])
+    window = dict(payload.get("window") or {})
+    checkpoints = list(window.get("checkpoints") or [])
+    label_counts = Counter(str(row["label"]) for row in rows)
+    labels = sorted(label_counts.keys(), key=lambda label: LABEL_ORDER.get(label, 99))
+    return {
+        "bundle_key": window_id,
+        "window_id": window_id,
+        "partition_key": window.get("partition_key"),
+        "window_index": window.get("window_index"),
+        "project": _window_value(checkpoints, "project"),
+        "repo": _window_value(checkpoints, "repo"),
+        "session_id": _window_value(checkpoints, "session_id"),
+        "headline": _proposal_headline(label_counts),
+        "summary": _proposal_summary(label_counts, checkpoints),
+        "labels": labels,
+        "candidate_keys": [str(row["candidate_key"]) for row in rows],
+        "candidates": [
+            {
+                "candidate_key": str(row["candidate_key"]),
+                "label": str(row["label"]),
+                "score": float(row["score"]),
+                "status": str(row["status"]),
+                "suggestion_seq": int(row["suggestion_seq"]),
+            }
+            for row in sorted(rows, key=lambda row: (LABEL_ORDER.get(str(row["label"]), 99), str(row["candidate_key"])))
+        ],
+        "checkpoint_count": len(checkpoints),
+        "checkpoint_summaries": [
+            str(checkpoint.get("summary") or "(no summary)")
+            for checkpoint in checkpoints[:3]
+        ],
+        "timing": {
+            "final_hint": any(bool(checkpoint.get("final_hint")) for checkpoint in checkpoints),
+            "session_end": any(checkpoint.get("checkpoint_kind") == "session_end" for checkpoint in checkpoints),
+            "carry_chain_terminal": bool(window.get("carry_chain_terminal")),
+        },
+    }
+
+
+def _proposal_headline(label_counts: Counter[str]) -> str:
+    if set(label_counts.keys()) == {"session_thin"}:
+        return "この区切りを session-log 候補として提案できます。"
+    return f"この区切りで {_render_label_counts(label_counts)} をまとめてレビューできます。"
+
+
+def _proposal_summary(label_counts: Counter[str], checkpoints: list[dict[str, Any]]) -> str:
+    context = " / ".join(
+        str(checkpoint.get("summary") or "(no summary)")
+        for checkpoint in checkpoints[:2]
+    )
+    if context:
+        return f"{_render_label_counts(label_counts)} が見つかりました。文脈: {context}"
+    return f"{_render_label_counts(label_counts)} が見つかりました。"
+
+
+def _render_label_counts(label_counts: Counter[str]) -> str:
+    parts = [
+        f"{LABEL_DISPLAY.get(label, label)} 候補 {label_counts[label]} 件"
+        for label in sorted(label_counts.keys(), key=lambda label: LABEL_ORDER.get(label, 99))
+    ]
+    return "、".join(parts)
+
+
+def _candidate_payload(row: Any) -> dict[str, Any]:
+    return json.loads(str(row["payload_json"])) if row["payload_json"] else {}
+
+
+def _candidate_window_id(row: Any) -> str:
+    return str(row["window_id"])
+
+
+def _candidate_partition_key(row: Any) -> str | None:
+    payload = _candidate_payload(row)
+    window = dict(payload.get("window") or {})
+    partition_key = window.get("partition_key")
+    return str(partition_key) if partition_key else None
+
+
+def _candidate_is_suggestable(row: Any) -> bool:
+    last_suggested_at = row["last_suggested_at"]
+    updated_at = row["updated_at"]
+    return last_suggested_at is None or (updated_at is not None and str(updated_at) > str(last_suggested_at))
+
+
+def _window_value(checkpoints: list[dict[str, Any]], key: str) -> str | None:
+    for checkpoint in checkpoints:
+        value = checkpoint.get(key)
+        if value:
+            return str(value)
+    return None
+
+
+def _is_proposal_timing(window_payload: dict[str, Any], decision: dict[str, Any] | None) -> bool:
+    if decision and bool(decision.get("should_emit_thin_session")):
+        return True
+    return any(
+        checkpoint.get("final_hint") or checkpoint.get("checkpoint_kind") == "session_end"
+        for checkpoint in window_payload.get("checkpoints", [])
+    )
 
 
 def _candidate_key(window_id: str, label: str) -> str:

@@ -1033,7 +1033,7 @@ def build_parser() -> argparse.ArgumentParser:
     dispatch_parser.add_argument("--event", required=True)
     dispatch_parser.add_argument("--payload-file")
     dispatch_parser.add_argument("--run-worker", action="store_true", help="Drain worker after dispatch")
-    dispatch_parser.add_argument("--judge-fastpath", action="store_true", help="Attempt fast-path judge before worker drain")
+    dispatch_parser.add_argument("--judge-fastpath", action="store_true", help="Attempt fast-path judge before worker drain and return proposal bundles")
 
     # worker
     worker_parser = sub.add_parser("worker", help="Event worker commands")
@@ -1068,7 +1068,7 @@ def build_parser() -> argparse.ArgumentParser:
     # judge
     judge_parser = sub.add_parser("judge", help="Judge and review candidate commands")
     judge_sub = judge_parser.add_subparsers(dest="judge_command")
-    judge_review_parser = judge_sub.add_parser("review-candidates", help="Build judge runs and print pending review candidates")
+    judge_review_parser = judge_sub.add_parser("review-candidates", help="Build judge runs and print pending review candidates plus suggestion bundles")
     judge_review_parser.add_argument("--limit", type=int, default=50)
     judge_review_parser.add_argument("--model-hint")
     judge_accept_parser = judge_sub.add_parser("accept", help="Accept a pending candidate")
