@@ -131,7 +131,7 @@ def load_partition_checkpoints(partition_key: str) -> list[CheckpointInput]:
 def build_windows(
     partition_key: str,
     *,
-    checkpoint_limit: int = 10,
+    checkpoint_limit: int = 5,
     idle_seconds: int = 20 * 60,
 ) -> list[WindowInput]:
     """Group checkpoints into deterministic windows for judge input."""

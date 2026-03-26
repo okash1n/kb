@@ -159,7 +159,7 @@ class JudgeCliTest(unittest.TestCase):
                 "content": "相談を続ける",
                 "occurred_at": f"2026-03-25T00:{idx:02d}:00+00:00",
             }
-            for idx in range(30)
+            for idx in range(15)
         ]
         self._append_checkpoint_sequence(session_id="session-thin", payloads=payloads)
         result = self._run_review_candidates(

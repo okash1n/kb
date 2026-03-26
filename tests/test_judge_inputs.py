@@ -199,7 +199,7 @@ class JudgeInputsTest(unittest.TestCase):
             "cwd": str(self.vault),
             "session_id": "session-carry",
         }
-        for idx in range(10):
+        for idx in range(5):
             store.append(
                 normalize_event(
                     tool="codex",
@@ -233,7 +233,7 @@ class JudgeInputsTest(unittest.TestCase):
             "cwd": str(self.vault),
             "session_id": "session-long",
         }
-        for idx in range(30):
+        for idx in range(15):
             store.append(
                 normalize_event(
                     tool="codex",
