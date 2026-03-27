@@ -474,22 +474,75 @@ def _render_dispatch_summary(payload: dict[str, object]) -> str:
     if not bundles:
         return ""
     first = bundles[0]
-    headline = str(first.get("headline") or "kb から保存候補があります。")
-    summary = str(first.get("summary") or "").strip()
     checkpoint_summaries = [
         str(item).strip()
         for item in (first.get("checkpoint_summaries") or [])
         if str(item).strip()
     ]
-    lines = ["kb recommendation:", headline]
-    if summary:
-        lines.append(summary)
-    if checkpoint_summaries:
-        lines.append(f"文脈: {' / '.join(checkpoint_summaries[:2])}")
+    labels = [
+        str(item).strip()
+        for item in (first.get("labels") or [])
+        if str(item).strip()
+    ]
+    context_items = _dedupe_preserving_order(checkpoint_summaries)
+    lines = ["kb recommendation:"]
+    lines.extend(_dispatch_recommendation_lines(labels=labels, context_items=context_items))
     remaining = len(bundles) - 1
     if remaining > 0:
         lines.append(f"ほかに {remaining} bundle あります。")
     return "\n".join(lines)
+
+
+def _dispatch_recommendation_lines(*, labels: list[str], context_items: list[str]) -> list[str]:
+    primary = labels[0] if labels else ""
+    context = context_items[0] if context_items else "この区切りの内容"
+    if primary == "gap":
+        lines = [
+            f"先ほどの「{context}」は gap として残せそうです。",
+            "同じズレを次回避けるための記録として役立ちます。",
+            "保存するなら gap にします。",
+        ]
+    elif primary == "knowledge":
+        lines = [
+            f"先ほどの「{context}」は knowledge として残せそうです。",
+            "次に同じ確認をするときの再利用に向いた内容です。",
+            "保存するなら knowledge にします。",
+        ]
+    elif primary == "adr":
+        lines = [
+            f"先ほどの「{context}」は ADR として残せそうです。",
+            "どの判断を採ったか後から追いやすくするための記録です。",
+            "保存するなら ADR にします。",
+        ]
+    elif primary == "session_thin":
+        lines = [
+            "この区切りは session-log として薄く残せそうです。",
+            f"要点は「{context}」です。",
+            "保存するなら session-log にします。",
+        ]
+    else:
+        lines = [
+            "この区切りは kb に残す候補がありそうです。",
+            f"要点は「{context}」です。",
+        ]
+    extra_labels = [label for label in labels[1:] if label]
+    if extra_labels:
+        readable = ", ".join(extra_labels)
+        lines.append(f"あわせて {readable} 候補も見つかっています。")
+    if len(context_items) > 1:
+        lines.append(f"近い文脈: {' / '.join(context_items[:2])}")
+    return lines
+
+
+def _dedupe_preserving_order(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    unique: list[str] = []
+    for item in items:
+        if item in seen:
+            continue
+        seen.add(item)
+        unique.append(item)
+    return unique
 
 
 def cmd_hook_summarize_dispatch(args: argparse.Namespace) -> None:
