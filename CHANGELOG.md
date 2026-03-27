@@ -7,6 +7,14 @@
 
 ## [Unreleased]
 
+## [0.19.2] - 2026-03-27
+
+### Changed
+
+- `hook summarize-dispatch` の recommendation 文面を標準日本語に改め、候補種別・残す価値・保存先が短く分かる形に調整した
+- recommendation 文面の回帰テストを更新し、重複した文脈をそのまま繰り返さないことを固定した
+- `0.19.2` リリースに向けて patch version を更新した
+
 ## [0.19.1] - 2026-03-26
 
 ### Added

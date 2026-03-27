@@ -466,7 +466,8 @@ class InstallAndDoctorTest(unittest.TestCase):
                     {
                         "headline": "この区切りで gap 候補 1 件、knowledge 候補 1 件 をまとめてレビューできます。",
                         "summary": "gap 候補 1 件、knowledge 候補 1 件 が見つかりました。文脈: slug を直した / tags を直した",
-                        "checkpoint_summaries": ["slug を直した", "tags を直した"],
+                        "labels": ["gap", "knowledge"],
+                        "checkpoint_summaries": ["slug を直した", "tags を直した", "slug を直した"],
                     },
                     {
                         "headline": "secondary",
@@ -488,7 +489,10 @@ class InstallAndDoctorTest(unittest.TestCase):
 
         output = buf.getvalue()
         self.assertIn("kb recommendation:", output)
-        self.assertIn("文脈: slug を直した / tags を直した", output)
+        self.assertIn("先ほどの「slug を直した」は gap として残せそうです。", output)
+        self.assertIn("保存するなら gap にします。", output)
+        self.assertIn("あわせて knowledge 候補も見つかっています。", output)
+        self.assertIn("近い文脈: slug を直した / tags を直した", output)
         self.assertIn("ほかに 1 bundle あります。", output)
 
     def test_install_codex_wrapper_surfaces_recommendation_on_stderr(self) -> None:
